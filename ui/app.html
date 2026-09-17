@@ -77,6 +77,12 @@
         <div id="det-wrap"><div class="empty" id="det-empty">No detections yet — run a scan.</div>
         <table id="det-table" hidden><thead><tr><th>Severity</th><th>File</th><th>Signature</th><th>Engine</th><th></th></tr></thead><tbody id="det-body"></tbody></table></div>
       </div>
+      <div class="panel">
+        <h3>Allowlist — known-safe files <span class="chip" id="al-count">0</span></h3>
+        <p class="hint">Files you mark as <strong>Safe</strong> are recorded here by path and SHA-256 and are never flagged again. CobraShield also automatically excludes its own vault, reports and tripwire state from every scan, so quarantined files can't re-trigger alerts.</p>
+        <div id="al-empty" class="empty">No files allowlisted.</div>
+        <table id="al-table" hidden><thead><tr><th>Path / SHA-256</th><th></th></tr></thead><tbody id="al-body"></tbody></table>
+      </div>
     </div>
 
     <!-- VAULT -->
@@ -138,6 +144,7 @@ document.querySelectorAll('.nav button').forEach(button => button.addEventListen
   $('#active').textContent = button.textContent;
   sidebar.classList.remove('open');
   if (button.dataset.page === 'vault') loadVault();
+  if (button.dataset.page === 'threats') loadAllowlist();
 }));
 
 /* ---------------- activity feed ---------------- */
@@ -248,15 +255,19 @@ function renderDetections(list){
     <tr><td><span class="sev ${esc(d.severity)}">${esc(d.severity.toUpperCase())}</span></td>
     <td>${esc(d.file_path)}</td><td>${esc(d.signature_name)}</td>
     <td><span class="sev sig">${esc(d.detection_type)}</span></td>
-    <td style="white-space:nowrap"><button class="rowbtn" onclick="detAction(${i},'quarantine')">Quarantine</button><button class="rowbtn del" onclick="detAction(${i},'delete')">Delete</button></td></tr>`).join('');
+    <td style="white-space:nowrap"><button class="rowbtn" onclick="detAction(${i},'quarantine')">Quarantine</button><button class="rowbtn" onclick="detAction(${i},'safe')">Safe</button><button class="rowbtn del" onclick="detAction(${i},'delete')">Delete</button></td></tr>`).join('');
 }
 async function detAction(i, action){
   const res = await api('detection/action', {index: i, action});
   if (res.ok){
-    logActivity(action === 'delete' ? '✕' : '↧', action === 'delete' ? 'Threat deleted' : 'Threat quarantined', res.path || '', action === 'delete' ? 'bad' : 'warn');
+    const titles = {quarantine: 'Threat quarantined', delete: 'Threat deleted', safe: 'Marked safe — never flagged again', dismiss: 'Detection dismissed'};
+    const icons = {quarantine: '↧', delete: '✕', safe: '✓', dismiss: '◌'};
+    const tones = {quarantine: 'warn', delete: 'bad', safe: 'ok', dismiss: 'ok'};
+    logActivity(icons[action] || '✓', titles[action] || 'Action applied', res.path || '', tones[action] || 'ok');
     const d = await api('detections');
     renderDetections(d.detections);
     loadVault();
+    loadAllowlist();
     refresh();
   } else {
     logActivity('!', 'Action failed', res.error || 'unknown error', 'bad');
@@ -281,6 +292,26 @@ async function qAction(id, action){
   const res = await api('quarantine/action', {id, action});
   logActivity(res.ok ? (action === 'delete' ? '✕' : '↺') : '!', res.ok ? (action === 'delete' ? 'Quarantined file destroyed' : 'File restored') : 'Vault action failed', res.path || res.error || '', res.ok ? 'ok' : 'bad');
   loadVault(); refresh();
+}
+
+/* ---------------- allowlist ---------------- */
+async function loadAllowlist(){
+  try {
+    const res = await api('allowlist');
+    const entries = [...(res.entries.paths || []), ...(res.entries.hashes || [])];
+    $('#al-count').textContent = entries.length;
+    const empty = $('#al-empty'), table = $('#al-table'), body = $('#al-body');
+    if (!entries.length){ empty.hidden = false; table.hidden = true; return; }
+    empty.hidden = true; table.hidden = false;
+    body.innerHTML = entries.map(v => `
+      <tr><td class="mini">${esc(v.length > 72 ? v.slice(0, 69) + '…' : v)}</td>
+      <td style="white-space:nowrap"><button class="rowbtn del" onclick="alRemove(decodeURIComponent('${encodeURIComponent(v)}'))">Remove</button></td></tr>`).join('');
+  } catch(e){}
+}
+async function alRemove(value){
+  await api('allowlist/remove', {value});
+  logActivity('↺', 'Allowlist entry removed', value, 'ok');
+  loadAllowlist(); refresh();
 }
 
 /* ---------------- honeyfiles & guard ---------------- */
@@ -350,6 +381,7 @@ async function refresh(){
     const initials = s.user.split(/\\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'CS';
     $('#avatar').textContent = initials; $('#avatar2').textContent = initials;
     renderDetections(s.detections_list || []);
+    loadAllowlist();
     $('#status-title').textContent = 'You are protected';
     $('#status-copy').textContent = 'Run a smart scan to check your device.';
   });

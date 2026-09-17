@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 
 from scanner import (
+    Allowlist,
     HoneyfileSentinel,
     MalwareScanner,
     QuarantineManager,
@@ -162,6 +163,53 @@ class ScannerTests(unittest.TestCase):
             score, status = compute_health_score(dirty)
             self.assertLess(score, 100)
             self.assertNotEqual(status, "SECURE")
+
+    def test_scanner_never_flags_its_own_vault(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / ".cobrashield" / "quarantine"
+            vault.mkdir(parents=True)
+            quarantined = vault / "abc123.qs"
+            quarantined.write_text(
+                "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            )
+            scanner = MalwareScanner(excluded_paths=[Path(tmp) / ".cobrashield"])
+
+            summary = scanner.scan_paths([Path(tmp)])
+
+            self.assertEqual(summary.detections, [])
+            self.assertEqual(scanner.scan_file(quarantined), [])
+
+    def test_allowlist_suppresses_false_positive_by_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            allowlist = Allowlist(Path(tmp) / "allowlist.json")
+            target = Path(tmp) / "eicar.txt"
+            target.write_text(
+                "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            )
+            scanner = MalwareScanner(allowlist=allowlist, excluded_paths=[])
+
+            self.assertEqual(len(scanner.scan_file(target)), 1)
+
+            allowlist.add(path=target)
+            self.assertEqual(scanner.scan_file(target), [])
+
+            self.assertTrue(allowlist.remove(str(target.resolve())))
+            self.assertEqual(len(scanner.scan_file(target)), 1)
+
+    def test_allowlist_suppresses_false_positive_by_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            import hashlib as _hashlib
+
+            content = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            digest = _hashlib.sha256(content).hexdigest()
+            allowlist = Allowlist(Path(tmp) / "allowlist.json")
+            allowlist.add(digest=digest)
+
+            target = Path(tmp) / "renamed-copy.txt"
+            target.write_bytes(content)
+            scanner = MalwareScanner(allowlist=allowlist, excluded_paths=[])
+
+            self.assertEqual(scanner.scan_file(target), [])
 
 
 if __name__ == "__main__":

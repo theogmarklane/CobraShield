@@ -16,6 +16,7 @@ CobraShield is a desktop antivirus prototype focused on full-system scanning wit
 - **Root Deduplication**: Prevents duplicate scanning when child storage paths overlap with parent system roots.
 - **Live UI & CLI Fallback**: Run via graphical interface or headless CLI mode (`--cli` or auto-fallback on displayless Chromebook setups).
 - **Signature detections**: Identifies known malware test signatures (including EICAR).
+- **False-positive guard**: Never flags CobraShield's own data (quarantine vault, reports, tripwire state) — quarantined malware bytes can't re-trigger scans. **Allowlist** lets you mark known-safe files (by SHA-256 or path) so they're never flagged again.
 - **Access tracking**: Reports blocked/inaccessible paths encountered during scan.
 
 ## Run

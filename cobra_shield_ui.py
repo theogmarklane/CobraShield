@@ -12,6 +12,7 @@ import threading
 import webbrowser
 
 from scanner import (
+    Allowlist,
     Detection,
     HoneyfileSentinel,
     MalwareScanner,
@@ -36,7 +37,8 @@ class CobraShieldService:
     """Holds scanner state and executes every action the web UI can trigger."""
 
     def __init__(self) -> None:
-        self.scanner = MalwareScanner()
+        self.allowlist = Allowlist()
+        self.scanner = MalwareScanner(allowlist=self.allowlist)
         self.quarantine = QuarantineManager()
         self.sentinel = HoneyfileSentinel()
         self.lock = threading.Lock()
@@ -101,6 +103,7 @@ class CobraShieldService:
             "files_scanned": self.last_summary.scanned_files,
             "detections": len(self.detections),
             "quarantined": self.quarantine.count(),
+            "allowlisted": self.allowlist.count(),
             "tripwires": self.sentinel.planted_count(),
             "tripwire_alerts": len(alerts),
             "health_score": score,
@@ -185,6 +188,10 @@ class CobraShieldService:
                 raise ApiError(str(err))
             self.detections.pop(index)
             return {"ok": True, "path": str(detection.file_path)}
+        if action == "safe":
+            self.allowlist.add(path=detection.file_path, digest=detection.file_hash)
+            self.detections.pop(index)
+            return {"ok": True, "path": str(detection.file_path)}
         if action == "dismiss":
             self.detections.pop(index)
             return {"ok": True, "path": str(detection.file_path)}
@@ -247,6 +254,7 @@ class CobraShieldService:
                     directories[:] = [
                         d for d in directories
                         if not MalwareScanner._is_virtual_dir(Path(dirpath) / d)
+                        and not self.scanner._is_excluded(Path(dirpath) / d)
                     ]
                     for name in files:
                         candidate = Path(dirpath) / name
@@ -337,6 +345,9 @@ class ApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/quarantine/list":
             self._send_json(self.service.quarantine_list())
             return
+        if self.path == "/api/allowlist":
+            self._send_json({"entries": self.service.allowlist.entries(), "count": self.service.allowlist.count()})
+            return
         if self.path == "/api/honeyfiles/check":
             self._send_json(self.service.honeyfiles_check())
             return
@@ -361,6 +372,9 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/quarantine/action":
                 self._send_json(self.service.quarantine_action(body.get("id", ""), body.get("action", "")))
+                return
+            if self.path == "/api/allowlist/remove":
+                self._send_json({"ok": self.service.allowlist.remove(body.get("value", ""))})
                 return
             if self.path == "/api/honeyfiles/plant":
                 self._send_json(self.service.honeyfiles_plant())

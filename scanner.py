@@ -21,6 +21,7 @@ class Detection:
     severity: str = "high"
     detection_type: str = "signature"
     detail: str = ""
+    file_hash: str = ""
 
 
 @dataclass
@@ -67,17 +68,52 @@ class MalwareScanner:
         ".jar", ".apk", ".dmg", ".iso", ".img",
     }
 
-    def __init__(self, signatures: dict[str, bytes] | None = None, enable_heuristics: bool = True) -> None:
+    def __init__(
+        self,
+        signatures: dict[str, bytes] | None = None,
+        enable_heuristics: bool = True,
+        allowlist: "Allowlist | None" = None,
+        excluded_paths: Iterable[Path] | None = None,
+    ) -> None:
         self.signatures = signatures or self.SIGNATURES
         self.enable_heuristics = enable_heuristics
+        self.allowlist = allowlist
+        self.excluded_paths = tuple(
+            self._safe_resolve(p)
+            for p in (excluded_paths if excluded_paths is not None else default_exclusions())
+        )
+
+    @staticmethod
+    def _safe_resolve(path: Path) -> Path:
+        try:
+            return path.resolve()
+        except OSError:
+            return path
+
+    def _is_excluded(self, path: Path) -> bool:
+        """False-positive guard: never flag CobraShield's own data (vault, reports, state)."""
+        if not self.excluded_paths:
+            return False
+        if any(ex == path or ex in path.parents for ex in self.excluded_paths):
+            return True
+        if not path.is_absolute():
+            candidate = self._safe_resolve(path)
+            return any(ex == candidate or ex in candidate.parents for ex in self.excluded_paths)
+        return False
 
     def scan_file(self, path: Path) -> list[Detection]:
         if not path.is_file():
+            return []
+        if self._is_excluded(path):
             return []
 
         try:
             data = path.read_bytes()
         except (PermissionError, OSError):
+            return []
+
+        digest = hashlib.sha256(data).hexdigest()
+        if self.allowlist is not None and self.allowlist.is_allowed(path, digest):
             return []
 
         detections: list[Detection] = []
@@ -90,14 +126,15 @@ class MalwareScanner:
                     severity="high",
                     detection_type="signature",
                     detail="Matched known malware signature",
+                    file_hash=digest,
                 ))
 
         if self.enable_heuristics:
-            detections.extend(self._run_heuristics(path, data))
+            detections.extend(self._run_heuristics(path, data, digest))
 
         return detections
 
-    def _run_heuristics(self, path: Path, data: bytes) -> list[Detection]:
+    def _run_heuristics(self, path: Path, data: bytes, digest: str = "") -> list[Detection]:
         """Signature-free detection: catches threats no AV database knows yet."""
         results: list[Detection] = []
 
@@ -113,6 +150,7 @@ class MalwareScanner:
                 severity="high",
                 detection_type="heuristic",
                 detail=f"Poses as a '{suffixes[-2]}' document but is a '{suffixes[-1]}' executable",
+                file_hash=digest,
             ))
 
         if (
@@ -127,6 +165,7 @@ class MalwareScanner:
                     severity="medium",
                     detection_type="heuristic",
                     detail=f"Shannon entropy {entropy:.2f}/8.0 suggests a packed or encrypted payload",
+                    file_hash=digest,
                 ))
 
         return results
@@ -160,6 +199,7 @@ class MalwareScanner:
                 item
                 for item in directories
                 if not self._is_virtual_dir(current_path / item)
+                and not self._is_excluded(current_path / item)
                 and self._is_accessible(current_path / item, summary)
             ]
 
@@ -298,6 +338,89 @@ def shannon_entropy(data: bytes) -> float:
     counts = Counter(data)
     length = len(data)
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+
+def default_exclusions() -> list[Path]:
+    """Locations that must never be flagged — CobraShield's own vault, reports and state."""
+    return [Path.home() / ".cobrashield"]
+
+
+class Allowlist:
+    """User-approved known-safe files (by SHA-256 hash or exact path).
+
+    Entries suppress future detections — the standard answer to false positives.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or (Path.home() / ".cobrashield" / "allowlist.json")
+        self._cache: dict | None = None
+        self._cache_mtime: float | None = None
+
+    def _load(self) -> dict:
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if self._cache is not None and mtime == self._cache_mtime:
+            return self._cache
+        data = {"hashes": [], "paths": []}
+        if mtime is not None:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                data = {"hashes": raw.get("hashes", []), "paths": raw.get("paths", [])}
+            except (OSError, json.JSONDecodeError):
+                pass
+        self._cache = data
+        self._cache_mtime = mtime
+        return data
+
+    def _save(self, data: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        self._cache = None
+
+    def entries(self) -> dict:
+        return {"hashes": list(self._load()["hashes"]), "paths": list(self._load()["paths"])}
+
+    def count(self) -> int:
+        data = self._load()
+        return len(data["hashes"]) + len(data["paths"])
+
+    def is_allowed(self, path: Path, digest: str = "") -> bool:
+        data = self._load()
+        if digest and digest in data["hashes"]:
+            return True
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            resolved = str(path)
+        return resolved in data["paths"] or str(path) in data["paths"]
+
+    def add(self, path: Path | None = None, digest: str = "") -> None:
+        data = self._load()
+        if digest and digest not in data["hashes"]:
+            data["hashes"].append(digest)
+        if path is not None:
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                resolved = str(path)
+            if resolved not in data["paths"]:
+                data["paths"].append(resolved)
+        self._save(data)
+
+    def remove(self, value: str) -> bool:
+        data = self._load()
+        removed = False
+        if value in data["hashes"]:
+            data["hashes"].remove(value)
+            removed = True
+        if value in data["paths"]:
+            data["paths"].remove(value)
+            removed = True
+        if removed:
+            self._save(data)
+        return removed
 
 
 @dataclass
