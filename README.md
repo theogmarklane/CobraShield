@@ -4,7 +4,7 @@ CobraShield is a desktop antivirus prototype focused on full-system scanning wit
 
 ## Features
 - **Chromebook & ChromeOS Compatibility**: Automatically detects ChromeOS / Crostini environments and targets ChromeOS shared storage locations (including `My Files`, `Google Drive`, external USB/SD drives, Android Play files under `/mnt/chromeos` & `/mnt/shared`).
-- **Modern dark UI**: Polished dashboard with a device-health ring, stat cards, Scan Center, Quarantine Vault, Live Guard and Reports pages — looks at home on ChromeOS and desktop.
+- **Modern Protection Center UI**: Web-based interface (served locally, opens in your browser) with a device-health ring, stat cards, protection timeline, dark sidebar and lime accent theme — no Qt/WebKit/display server needed, perfect for ChromeOS.
 - **Quarantine Vault**: Isolate detected threats into a neutralized (read-only) vault, then restore or permanently destroy them.
 - **Auto-actions**: Per-scan behavior — report only, auto-quarantine, or auto-delete.
 - **Heuristic engine ("Entropy Radar")**: Flags high-entropy packed/encrypted payloads and double-extension masquerades (`invoice.pdf.exe`) even with no signature match.
@@ -20,10 +20,20 @@ CobraShield is a desktop antivirus prototype focused on full-system scanning wit
 
 ## Run
 
-### Graphical UI
+### Graphical UI (web-based)
+CobraShield serves its Protection Center UI locally and opens it in your default browser — no display server, Qt, or WebKit required. Works identically on ChromeOS (Crostini) and desktop:
+
 ```bash
 python cobra_shield_ui.py
 ```
+
+Options:
+```bash
+python cobra_shield_ui.py --no-browser   # don't auto-open a browser tab
+python cobra_shield_ui.py --port 8080    # serve on a fixed port
+```
+
+The UI has four pages: **Overview** (health ring, stat cards, protection timeline), **Threats** (smart/full scans, auto-actions, per-detection quarantine/delete), **Vault** (restore or destroy quarantined files), and **Live Guard** (honeyfile tripwires + real-time file interception with an activity log).
 
 ### CLI Mode (Ideal for Chromebook / Headless Terminals)
 ```bash

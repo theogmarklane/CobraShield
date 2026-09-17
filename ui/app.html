@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CobraShield Protection Center</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap');
+:root{--ink:#0b1820;--ink2:#112730;--lime:#c9f36a;--mint:#e9f5ed;--line:#dce7e1;--muted:#7b8e88;--paper:#f7faf8}*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font-family:Manrope,Arial,sans-serif}button{font:inherit;cursor:pointer}.app{min-height:100vh;display:flex}.sidebar{width:245px;flex:none;background:var(--ink);color:#c4d1d1;padding:25px 18px;display:flex;flex-direction:column;position:relative;z-index:5}.brand{display:flex;align-items:center;gap:10px;color:#fff;font-weight:800;letter-spacing:-.04em;padding:0 10px 45px}.mark{width:34px;height:34px;border-radius:10px;background:var(--lime);color:var(--ink);display:grid;place-items:center;font-size:19px}.label{font:10px 'DM Mono';letter-spacing:.12em;text-transform:uppercase;color:#698089;padding:0 11px 12px}.nav{display:grid;gap:4px}.nav button{border:0;background:transparent;color:#91a5a4;text-align:left;padding:12px;border-radius:9px;font-size:12px;font-weight:700}.nav button:hover,.nav button.active{background:#18333b;color:#fff}.nav button.active{box-shadow:inset 3px 0 var(--lime)}.profile{margin-top:auto;border-top:1px solid #284047;padding:18px 10px 0;display:flex;gap:10px;font-size:11px}.avatar{width:29px;height:29px;border-radius:50%;background:#36555a;display:grid;place-items:center;color:var(--lime);font-size:11px;font-weight:800;flex:none}.profile small{display:block;color:#71898a;font-size:10px;margin-top:3px}.content{flex:1;min-width:0}.top{height:74px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 5%;background:#fff}.crumb{font-size:12px;color:var(--muted)}.crumb strong{color:var(--ink)}.top-actions{display:flex;gap:13px;align-items:center}.round{width:32px;height:32px;border:1px solid var(--line);border-radius:50%;background:#fff;color:#60736f}.account{display:flex;align-items:center;gap:9px;font-size:11px;font-weight:700}.menu{display:none}.dashboard{max-width:1250px;margin:auto;padding:39px 5% 65px}.heading{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:30px}.eyebrow{font:10px 'DM Mono';letter-spacing:.14em;color:#7a9089;text-transform:uppercase}.heading h1{font-size:35px;letter-spacing:-.07em;margin:8px 0 7px}.heading p{margin:0;color:var(--muted);font-size:12px}.scan{border:0;border-radius:9px;background:var(--ink);color:#fff;padding:13px 18px;font-size:11px;font-weight:800}.scan:disabled{opacity:.5;cursor:wait}.status{background:var(--ink);color:#fff;border-radius:16px;padding:25px 28px;display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;box-shadow:0 14px 35px #0c222417}.status-left{display:flex;align-items:center;gap:18px;min-width:0}.ring{width:70px;height:70px;border-radius:50%;border:7px solid #345459;border-top-color:var(--lime);border-right-color:var(--lime);display:grid;place-items:center;color:var(--lime);font-weight:800;font-size:16px;flex:none;transition:.4s}.status h2{font-size:20px;letter-spacing:-.05em;margin:0 0 5px}.status p{font-size:11px;color:#9fb5b3;margin:0}.pill{background:#173940;color:var(--lime);border:1px solid #31555b;border-radius:99px;padding:9px 12px;font:10px 'DM Mono';letter-spacing:.05em;white-space:nowrap}.pill.off{color:#e2b8b8;border-color:#5b3131}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-bottom:32px}.card,.activity,.panel{background:#fff;border:1px solid var(--line);border-radius:13px}.card{padding:20px}.card-top{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px}.icon{width:30px;height:30px;border-radius:8px;background:var(--mint);display:grid;place-items:center;color:#558b61}.card strong{display:block;font-size:27px;letter-spacing:-.07em;margin-top:18px}.card small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.positive{color:#62a847;font-size:10px;font-weight:700;margin-top:11px;display:block}.negative{color:#c0392b;font-size:10px;font-weight:700;margin-top:11px;display:block}.section-head{display:flex;justify-content:space-between;align-items:end;margin-bottom:13px}.section-head h2{font-size:19px;letter-spacing:-.05em;margin:6px 0 0}.view{color:#4f8b58;border:0;background:none;font-size:11px;font-weight:800}.activity{overflow:hidden}.row{display:grid;grid-template-columns:34px 1fr auto;gap:13px;align-items:center;padding:16px 19px;border-bottom:1px solid #edf2ef}.row:last-child{border-bottom:0}.row-icon{width:29px;height:29px;border-radius:8px;background:#edf7e9;color:#5a9a52;display:grid;place-items:center;font-weight:800;flex:none}.row-icon.warn{background:#fdf3e3;color:#c98a2d}.row-icon.bad{background:#fdeaea;color:#c0392b}.row strong{font-size:11px}.row p{font-size:10px;color:var(--muted);margin:4px 0 0}.time{font:10px 'DM Mono';color:#9aa9a5;white-space:nowrap}.progress{height:4px;border-radius:3px;background:#e4eee7;margin-top:10px;overflow:hidden;width:340px;max-width:100%}.progress i{display:block;width:0%;height:100%;background:#9bd95b;transition:width .3s}
+/* pages */
+.page{display:none}.page.active{display:block}.panel{padding:22px 24px;margin-bottom:18px}.panel h3{margin:0 0 4px;font-size:14px;letter-spacing:-.03em}.panel .hint{font-size:11px;color:var(--muted);margin:0 0 14px}.btnrow{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.btn{border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);padding:11px 15px;font-size:11px;font-weight:800}.btn:hover{border-color:#b9ccc4}.btn.primary{background:var(--ink);color:#fff;border-color:var(--ink)}.btn.lime{background:var(--lime);border-color:var(--lime);color:var(--ink)}.btn.danger{background:#fdeaea;color:#c0392b;border-color:#f3c9c9}.btn:disabled{opacity:.5;cursor:wait}select{font:inherit;font-size:11px;font-weight:700;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#fff;color:var(--ink)}.chip{display:inline-block;font:10px 'DM Mono';padding:4px 8px;border-radius:99px;background:var(--mint);color:#3c7049;margin-left:8px;vertical-align:middle}table{width:100%;border-collapse:collapse;font-size:11px}th{text-align:left;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:10px 12px;border-bottom:1px solid var(--line)}td{padding:11px 12px;border-bottom:1px solid #eef3f0;vertical-align:top;word-break:break-all}tr:last-child td{border-bottom:0}.sev{font:9px 'DM Mono';font-weight:700;padding:3px 8px;border-radius:99px;letter-spacing:.06em}.sev.high{background:#fdeaea;color:#c0392b}.sev.medium{background:#fdf3e3;color:#c98a2d}.sev.low{background:#e8f4fb;color:#2f6d8f}.sev.sig{background:#efe8fd;color:#6b3fb8}.mini{font-size:10px;color:var(--muted)}.logbox{background:var(--ink);color:#b9cec9;border-radius:10px;font:10px/1.7 'DM Mono';padding:14px 16px;height:190px;overflow:auto;white-space:pre-wrap}.logbox .bad{color:#f39b93}.logbox .good{color:#c9f36a}.empty{padding:34px;text-align:center;color:var(--muted);font-size:11px}.statline{display:flex;gap:22px;flex-wrap:wrap;margin:10px 0 16px}.statline div{font-size:11px}.statline strong{font-size:19px;display:block;letter-spacing:-.05em}.rowbtn{border:0;background:none;color:#4f8b58;font-size:10px;font-weight:800;padding:0;margin-right:10px}.rowbtn.del{color:#c0392b}
+@media(max-width:800px){.sidebar{position:fixed;inset:0 auto 0 0;transform:translateX(-100%);transition:.2s}.sidebar.open{transform:translateX(0)}.menu{display:block;border:0;background:none;font-size:20px;color:var(--ink);margin-right:10px}.top{padding:0 5%}.account{display:none}.top{justify-content:flex-start}.top-actions{margin-left:auto}.dashboard{padding:30px 5%}.heading{align-items:flex-start;gap:20px;flex-direction:column}.heading h1{font-size:31px}.status{align-items:flex-start;gap:20px;flex-direction:column}.pill{align-self:flex-start}.cards{grid-template-columns:1fr}.section-head{align-items:start;gap:12px}.row{grid-template-columns:30px 1fr}.time{grid-column:2}.progress{width:100%}}
+</style></head>
+<body><main class="app">
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><span class="mark">✓</span>CobraShield</div>
+  <div class="label">Protection center</div>
+  <nav class="nav">
+    <button class="active" data-page="overview">Overview</button>
+    <button data-page="threats">Threats</button>
+    <button data-page="vault">Vault</button>
+    <button data-page="guard">Live Guard</button>
+  </nav>
+  <div class="profile"><span class="avatar" id="avatar">CS</span><span><span id="user-name">CobraShield user</span><small id="device-kind">Personal device</small></span></div>
+</aside>
+<section class="content">
+  <header class="top">
+    <div class="crumb"><button class="menu" id="menu" aria-label="Open navigation">☰</button><strong id="active">Overview</strong> <span>/ CobraShield</span></div>
+    <div class="top-actions"><button class="round" aria-label="Export report" id="report-btn" title="Export HTML report">↧</button><div class="account"><span class="avatar" id="avatar2">CS</span><span id="user-name2">CobraShield user</span></div></div>
+  </header>
+  <div class="dashboard">
+
+    <!-- OVERVIEW -->
+    <div class="page active" id="page-overview">
+      <div class="heading">
+        <div><div class="eyebrow" id="date-line">—</div><h1 id="greeting">Welcome.</h1><p id="greeting-sub">Your device status is loading…</p></div>
+        <button class="scan" id="scan">Run smart scan</button>
+      </div>
+      <section class="status">
+        <div class="status-left">
+          <div class="ring" id="ring">—</div>
+          <div>
+            <h2 id="status-title">Initializing…</h2>
+            <p id="status-copy">CobraShield is getting ready.</p>
+            <div class="progress" id="progress" hidden><i id="progress-bar"></i></div>
+          </div>
+        </div>
+        <span class="pill off" id="shield-pill">● LIVE SHIELD OFF</span>
+      </section>
+      <section class="cards">
+        <article class="card"><div class="card-top">Files scanned<span class="icon">✓</span></div><strong id="card-files">0</strong><small>During the last scan</small><span class="positive" id="card-files-sub">No scans yet</span></article>
+        <article class="card"><div class="card-top">Threats found<span class="icon">◌</span></div><strong id="card-threats">0</strong><small>Active detections this session</small><span class="positive" id="card-threats-sub">Nothing detected</span></article>
+        <article class="card"><div class="card-top">Vault & tripwires<span class="icon">↗</span></div><strong id="card-vault">0</strong><small id="card-vault-sub">0 threats quarantined</small><span class="positive" id="card-trips">No tripwires armed</span></article>
+      </section>
+      <div class="section-head"><div><div class="eyebrow">Recent activity</div><h2>Protection timeline</h2></div></div>
+      <section class="activity" id="activity-list"><div class="empty">Activity will appear here as CobraShield protects you.</div></section>
+    </div>
+
+    <!-- THREATS -->
+    <div class="page" id="page-threats">
+      <div class="section-head"><div><div class="eyebrow">Scan center</div><h2>Threats</h2></div><span class="chip" id="platform-chip">—</span></div>
+      <div class="panel">
+        <h3>Start a scan</h3>
+        <p class="hint">Smart scan checks the folders malware actually lands in. Full scan covers every accessible root.</p>
+        <div class="btnrow">
+          <button class="btn primary" id="scan-quick">Smart scan</button>
+          <button class="btn" id="scan-full">Full system scan</button>
+          <span class="mini">On detection:</span>
+          <select id="auto-action">
+            <option value="report">Report only</option>
+            <option value="quarantine">Auto-quarantine</option>
+            <option value="delete">Auto-delete (permanent)</option>
+          </select>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Detections <span class="chip" id="det-count">0</span></h3>
+        <p class="hint">Signature and heuristic findings from the latest scans.</p>
+        <div id="det-wrap"><div class="empty" id="det-empty">No detections yet — run a scan.</div>
+        <table id="det-table" hidden><thead><tr><th>Severity</th><th>File</th><th>Signature</th><th>Engine</th><th></th></tr></thead><tbody id="det-body"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- VAULT -->
+    <div class="page" id="page-vault">
+      <div class="section-head"><div><div class="eyebrow">Neutralized threats</div><h2>Quarantine vault</h2></div></div>
+      <div class="panel">
+        <h3>Isolated files <span class="chip" id="q-count">0</span></h3>
+        <p class="hint">Quarantined files are stripped of execute permission and can be restored or permanently destroyed.</p>
+        <div id="q-empty" class="empty">The vault is empty.</div>
+        <table id="q-table" hidden><thead><tr><th>Original location</th><th>Signature</th><th>Severity</th><th>Quarantined</th><th></th></tr></thead><tbody id="q-body"></tbody></table>
+      </div>
+    </div>
+
+    <!-- GUARD -->
+    <div class="page" id="page-guard">
+      <div class="section-head"><div><div class="eyebrow">Real-time defenses</div><h2>Live Guard</h2></div></div>
+      <div class="panel">
+        <h3>Honeyfile tripwires</h3>
+        <p class="hint">Plants decoy password/wallet files across your folders. If ransomware or an infostealer touches one, the alarm fires here.</p>
+        <div class="btnrow">
+          <button class="btn lime" id="plant-btn">Plant tripwires</button>
+          <button class="btn" id="check-btn">Check integrity</button>
+          <span class="mini" id="honey-status">No tripwires planted yet</span>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Live file interception</h3>
+        <p class="hint">Watches Downloads, Drive and removable storage. New or changed files are scanned the moment they land — using your on-detection action.</p>
+        <div class="btnrow">
+          <button class="btn primary" id="guard-btn">Start Live Guard</button>
+          <span class="mini" id="guard-status">Live Guard is off</span>
+        </div>
+        <div style="height:12px"></div>
+        <div class="logbox" id="guard-log">Live Guard log will appear here.
+</div>
+      </div>
+    </div>
+
+  </div>
+</section></main>
+<script>
+/* ---------------- bridge ---------------- */
+async function api(path, body){
+  const opts = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
+  const res = await fetch('/api/' + path, opts);
+  return res.json();
+}
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* ---------------- navigation ---------------- */
+const sidebar = $('#sidebar');
+$('#menu').addEventListener('click', () => sidebar.classList.toggle('open'));
+document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => {
+  document.querySelector('.nav .active').classList.remove('active');
+  button.classList.add('active');
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  $('#page-' + button.dataset.page).classList.add('active');
+  $('#active').textContent = button.textContent;
+  sidebar.classList.remove('open');
+  if (button.dataset.page === 'vault') loadVault();
+}));
+
+/* ---------------- activity feed ---------------- */
+const activity = [];
+function logActivity(icon, title, copy, tone){
+  activity.unshift({icon, title, copy, tone: tone || 'ok', time: new Date()});
+  renderActivity();
+}
+function renderActivity(){
+  const list = $('#activity-list');
+  if (!activity.length){ list.innerHTML = '<div class="empty">Activity will appear here as CobraShield protects you.</div>'; return; }
+  list.innerHTML = activity.slice(0, 8).map(a => `
+    <div class="row"><span class="row-icon ${a.tone === 'warn' ? 'warn' : a.tone === 'bad' ? 'bad' : ''}">${a.icon}</span>
+    <div><strong>${esc(a.title)}</strong><p>${esc(a.copy)}</p></div>
+    <span class="time">${a.time.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})}</span></div>`).join('');
+}
+
+/* ---------------- status rendering ---------------- */
+let stats = null;
+function renderStats(){
+  if (!stats) return;
+  $('#card-files').textContent = stats.files_scanned.toLocaleString();
+  $('#card-threats').textContent = stats.detections;
+  $('#card-vault').textContent = stats.quarantined;
+  $('#card-vault-sub').textContent = stats.quarantined + ' threat' + (stats.quarantined === 1 ? '' : 's') + ' quarantined';
+  $('#card-trips').textContent = stats.tripwire_alerts
+    ? stats.tripwire_alerts + ' TRIPWIRE ALERT' + (stats.tripwire_alerts === 1 ? '' : 'S')
+    : stats.tripwires + ' tripwire' + (stats.tripwires === 1 ? '' : 's') + ' armed';
+  $('#card-trips').className = stats.tripwire_alerts ? 'negative' : 'positive';
+  $('#card-threats-sub').textContent = stats.detections ? 'Review in Threats tab' : 'Nothing detected';
+  $('#card-threats-sub').className = stats.detections ? 'negative' : 'positive';
+  $('#card-files-sub').textContent = stats.last_scan ? 'Last scan ' + new Date(stats.last_scan).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'No scans yet';
+
+  const ring = $('#ring');
+  ring.textContent = stats.health_score + '%';
+  const score = stats.health_score;
+  const deg = Math.round((score / 100) * 360);
+  const color = score >= 85 ? 'var(--lime)' : score >= 60 ? '#f3d36a' : '#f38a6a';
+  ring.style.borderTopColor = color; ring.style.borderRightColor = color;
+  ring.style.color = color;
+  ring.style.transform = 'rotate(' + Math.min(deg, 45) + 'deg)';
+
+  $('#status-title').textContent = stats.health_status === 'SECURE' ? 'You are fully protected'
+    : stats.health_status === 'AT RISK' ? 'Your device needs attention' : 'Your device is at risk';
+
+  const pill = $('#shield-pill');
+  pill.textContent = stats.guard_running ? '● LIVE SHIELD ON' : '● LIVE SHIELD OFF';
+  pill.classList.toggle('off', !stats.guard_running);
+
+  $('#guard-status').textContent = stats.guard_running ? 'Live Guard is watching your folders' : 'Live Guard is off';
+  $('#guard-btn').textContent = stats.guard_running ? 'Stop Live Guard' : 'Start Live Guard';
+}
+
+/* ---------------- scanning ---------------- */
+let scanning = false;
+async function startScan(mode){
+  if (scanning) return;
+  scanning = true;
+  const btn = $('#scan');
+  btn.disabled = true; btn.textContent = 'Scanning device…';
+  $('#status-title').textContent = 'Checking your device';
+  $('#status-copy').textContent = 'CobraShield is checking files, apps, and storage.';
+  $('#progress').hidden = false;
+  try { await api('scan/start', {mode, auto_action: $('#auto-action').value}); }
+  catch(e){ scanning = false; btn.disabled = false; btn.textContent = 'Run smart scan'; }
+}
+$('#scan').addEventListener('click', () => startScan('quick'));
+$('#scan-quick').addEventListener('click', () => startScan('quick'));
+$('#scan-full').addEventListener('click', () => startScan('full'));
+$('#auto-action').addEventListener('change', e => {
+  if (e.target.value === 'delete') logActivity('!', 'Auto-delete armed', 'Detections will be permanently deleted without prompting.', 'warn');
+  api('auto-action', {value: e.target.value});
+});
+
+async function pollScan(){
+  if (!scanning) return;
+  try {
+    const s = await api('scan/status');
+    $('#progress-bar').style.width = (s.total ? Math.round(s.current / s.total * 100) : 5) + '%';
+    if (s.label) $('#status-copy').textContent = s.label;
+    if (!s.running){
+      scanning = false;
+      const btn = $('#scan'); btn.disabled = false; btn.textContent = 'Run smart scan';
+      $('#progress').hidden = true; $('#progress-bar').style.width = '0%';
+      const r = s.result;
+      if (r){
+        $('#status-copy').textContent = 'Scan completed just now. ' + (r.detections.length ? r.detections.length + ' threat(s) found.' : 'No threats found.');
+        logActivity(r.detections.length ? '!' : '✓', (r.mode === 'full' ? 'Full scan' : 'Smart scan') + ' completed',
+          r.files_scanned.toLocaleString() + ' files checked. ' + r.detections.length + ' detection(s).' + (r.actions.length ? ' ' + r.actions.length + ' auto-action(s) applied.' : ''),
+          r.detections.length ? 'bad' : 'ok');
+        r.actions.forEach(a => logActivity('↧', a, '', 'warn'));
+        renderDetections(r.detections);
+        loadVault();
+      }
+    }
+  } catch(e){}
+  if (scanning) setTimeout(pollScan, 500);
+}
+setInterval(() => { if (scanning) pollScan(); }, 500);
+
+/* ---------------- detections table ---------------- */
+function renderDetections(list){
+  $('#det-count').textContent = list.length;
+  const empty = $('#det-empty'), table = $('#det-table'), body = $('#det-body');
+  if (!list.length){ empty.hidden = false; table.hidden = true; return; }
+  empty.hidden = true; table.hidden = false;
+  body.innerHTML = list.map((d, i) => `
+    <tr><td><span class="sev ${esc(d.severity)}">${esc(d.severity.toUpperCase())}</span></td>
+    <td>${esc(d.file_path)}</td><td>${esc(d.signature_name)}</td>
+    <td><span class="sev sig">${esc(d.detection_type)}</span></td>
+    <td style="white-space:nowrap"><button class="rowbtn" onclick="detAction(${i},'quarantine')">Quarantine</button><button class="rowbtn del" onclick="detAction(${i},'delete')">Delete</button></td></tr>`).join('');
+}
+async function detAction(i, action){
+  const res = await api('detection/action', {index: i, action});
+  if (res.ok){
+    logActivity(action === 'delete' ? '✕' : '↧', action === 'delete' ? 'Threat deleted' : 'Threat quarantined', res.path || '', action === 'delete' ? 'bad' : 'warn');
+    const d = await api('detections');
+    renderDetections(d.detections);
+    loadVault();
+    refresh();
+  } else {
+    logActivity('!', 'Action failed', res.error || 'unknown error', 'bad');
+  }
+}
+
+/* ---------------- vault ---------------- */
+async function loadVault(){
+  const res = await api('quarantine/list');
+  $('#q-count').textContent = res.records.length;
+  const empty = $('#q-empty'), table = $('#q-table'), body = $('#q-body');
+  if (!res.records.length){ empty.hidden = false; table.hidden = true; return; }
+  empty.hidden = true; table.hidden = false;
+  body.innerHTML = res.records.map(r => `
+    <tr><td>${esc(r.original_path)}</td><td>${esc(r.signature_name)}</td>
+    <td><span class="sev ${esc(r.severity)}">${esc(r.severity.toUpperCase())}</span></td>
+    <td class="mini">${esc(r.quarantined_at)}</td>
+    <td style="white-space:nowrap"><button class="rowbtn" onclick="qAction('${r.record_id}','restore')">Restore</button><button class="rowbtn del" onclick="qAction('${r.record_id}','delete')">Destroy</button></td></tr>`).join('');
+}
+async function qAction(id, action){
+  if (action === 'delete' && !confirm('Permanently destroy this quarantined file?')) return;
+  const res = await api('quarantine/action', {id, action});
+  logActivity(res.ok ? (action === 'delete' ? '✕' : '↺') : '!', res.ok ? (action === 'delete' ? 'Quarantined file destroyed' : 'File restored') : 'Vault action failed', res.path || res.error || '', res.ok ? 'ok' : 'bad');
+  loadVault(); refresh();
+}
+
+/* ---------------- honeyfiles & guard ---------------- */
+$('#plant-btn').addEventListener('click', async () => {
+  const res = await api('honeyfiles/plant', {});
+  $('#honey-status').textContent = res.total + ' tripwire(s) armed (' + res.planted + ' new)';
+  logActivity('◌', 'Honeyfile tripwires planted', res.planted + ' new decoys, ' + res.total + ' total armed.', 'ok');
+  refresh();
+});
+$('#check-btn').addEventListener('click', async () => {
+  const res = await api('honeyfiles/check');
+  if (!res.alerts.length){
+    $('#honey-status').textContent = 'All ' + res.total + ' tripwires intact';
+    logActivity('✓', 'Tripwire integrity verified', 'All decoys are untouched.', 'ok');
+  } else {
+    $('#honey-status').textContent = 'WARNING: ' + res.alerts.length + ' alert(s)';
+    res.alerts.forEach(a => logActivity('!', 'Tripwire ' + a.status, a.path, 'bad'));
+  }
+  refresh();
+});
+$('#guard-btn').addEventListener('click', async () => {
+  const res = await api('guard/toggle', {});
+  logActivity(res.running ? '↗' : '◌', res.running ? 'Live Guard started' : 'Live Guard stopped', res.roots ? 'Watching: ' + res.roots.join(', ') : '', 'ok');
+  refresh();
+});
+async function pollGuard(){
+  try {
+    const res = await api('guard/events');
+    if (res.events.length){
+      const log = $('#guard-log');
+      res.events.forEach(e => {
+        const line = document.createElement('span');
+        line.className = e.kind === 'detection' ? 'bad' : 'good';
+        line.textContent = '[' + e.time + '] ' + e.message + '\n';
+        log.appendChild(line);
+        logActivity(e.kind === 'detection' ? '!' : '✓', e.message, '', e.kind === 'detection' ? 'bad' : 'ok');
+      });
+      log.scrollTop = log.scrollHeight;
+    }
+  } catch(e){}
+}
+
+/* ---------------- report ---------------- */
+$('#report-btn').addEventListener('click', async () => {
+  const res = await api('report/export', {});
+  if (res.ok) logActivity('↧', 'Report exported', res.path, 'ok');
+  else logActivity('!', 'Report export failed', res.error || 'Run a scan first.', 'bad');
+});
+
+/* ---------------- boot & refresh ---------------- */
+async function refresh(){
+  try { stats = await api('stats'); renderStats(); } catch(e){}
+}
+(function boot(){
+  const now = new Date();
+  $('#date-line').textContent = now.toLocaleDateString([], {weekday:'long', year:'numeric', month:'long', day:'numeric'});
+  const hour = now.getHours();
+  $('#greeting').textContent = hour < 12 ? 'Good morning.' : hour < 18 ? 'Good afternoon.' : 'Good evening.';
+  api('stats').then(s => {
+    stats = s; renderStats();
+    $('#greeting-sub').textContent = s.platform === 'chromeos'
+      ? 'ChromeOS device — scanning My Files, Drive, Play files & SD cards.'
+      : 'Desktop device — full system coverage enabled.';
+    $('#device-kind').textContent = s.platform === 'chromeos' ? 'ChromeOS device' : 'Personal device';
+    $('#platform-chip').textContent = s.platform === 'chromeos' ? 'ChromeOS / Chromebook' : 'Desktop';
+    $('#user-name').textContent = s.user; $('#user-name2').textContent = s.user;
+    const initials = s.user.split(/\\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase() || 'CS';
+    $('#avatar').textContent = initials; $('#avatar2').textContent = initials;
+    renderDetections(s.detections_list || []);
+    $('#status-title').textContent = 'You are protected';
+    $('#status-copy').textContent = 'Run a smart scan to check your device.';
+  });
+  setInterval(pollGuard, 2000);
+  setInterval(refresh, 4000);
+})();
+</script></body></html>

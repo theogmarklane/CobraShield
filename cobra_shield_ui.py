@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import getpass
+import json
 import os
+import socket
 import sys
 import threading
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+import webbrowser
 
 from scanner import (
     Detection,
@@ -21,612 +24,226 @@ from scanner import (
     is_chromebook,
 )
 
-PALETTE = {
-    "bg": "#0b1220",
-    "panel": "#101a2c",
-    "panel_alt": "#16233a",
-    "border": "#22314d",
-    "text": "#e8eef7",
-    "muted": "#8ea0b8",
-    "accent": "#22d3ee",
-    "accent_hover": "#0ea5b7",
-    "danger": "#f87171",
-    "danger_hover": "#dc2626",
-    "success": "#34d399",
-    "warning": "#fbbf24",
-}
-
-AUTO_ACTIONS = ("Report only", "Auto-quarantine", "Auto-delete")
+APP_HTML_PATH = Path(__file__).resolve().parent / "ui" / "app.html"
+REPORT_DIR = Path.home() / ".cobrashield" / "reports"
 
 
-def _font(size: int = 10, weight: str = "normal") -> tuple:
-    family = "Segoe UI" if sys.platform.startswith("win") else "DejaVu Sans"
-    return (family, size, weight)
+class ApiError(Exception):
+    pass
 
 
-class CobraShieldApp:
-    def __init__(self, root: tk.Tk) -> None:
-        self.root = root
-        self.on_chromebook = is_chromebook()
-        title = "CobraShield Antivirus"
-        if self.on_chromebook:
-            title += " — ChromeOS Edition"
-        self.root.title(title)
-        self.root.geometry("1120x700")
-        self.root.minsize(980, 640)
-        self.root.configure(bg=PALETTE["bg"])
+class CobraShieldService:
+    """Holds scanner state and executes every action the web UI can trigger."""
 
+    def __init__(self) -> None:
         self.scanner = MalwareScanner()
         self.quarantine = QuarantineManager()
         self.sentinel = HoneyfileSentinel()
+        self.lock = threading.Lock()
 
         self.last_summary = ScanSummary()
         self.last_roots: list[Path] = []
+        self.last_scan_at: str | None = None
+        self.detections: list[Detection] = []
+        self.auto_action = "report"
+
         self.scan_running = False
+        self.scan_progress: dict = {"current": 0, "total": 0, "label": ""}
+        self.scan_mode = "quick"
+        self.scan_actions: list[str] = []
 
         self.guard_stop = threading.Event()
         self.guard_thread: threading.Thread | None = None
-        self.guard_active = False
+        self.guard_events: list[dict] = []
 
-        self._configure_styles()
-        self._build_header()
-        self._build_body()
-        self._build_statusbar()
+    # ---------- helpers ----------
 
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.show_page("dashboard")
-
-    # ---------- styling & layout ----------
-
-    def _configure_styles(self) -> None:
-        style = ttk.Style(self.root)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("TFrame", background=PALETTE["bg"])
-        style.configure(
-            "Treeview",
-            background=PALETTE["panel_alt"],
-            fieldbackground=PALETTE["panel_alt"],
-            foreground=PALETTE["text"],
-            bordercolor=PALETTE["border"],
-            rowheight=26,
-            font=_font(9),
-        )
-        style.configure("Treeview.Heading", background=PALETTE["panel"], foreground=PALETTE["muted"], font=_font(9, "bold"))
-        style.map(
-            "Treeview",
-            background=[("selected", PALETTE["accent_hover"])],
-            foreground=[("selected", "#04121a")],
-        )
-        style.configure(
-            "Horizontal.TProgressbar",
-            troughcolor=PALETTE["panel"],
-            background=PALETTE["accent"],
-            bordercolor=PALETTE["border"],
-        )
-        style.configure("TCombobox", fieldbackground=PALETTE["panel_alt"], background=PALETTE["panel_alt"], foreground=PALETTE["text"])
-
-    def _action_button(self, parent: tk.Widget, text: str, command, bg: str, hover: str | None = None) -> tk.Button:
-        dark_text_on = (PALETTE["accent"], PALETTE["danger"], PALETTE["success"], PALETTE["warning"])
-        fg = "#04121a" if bg in dark_text_on else PALETTE["text"]
-        return tk.Button(
-            parent,
-            text=text,
-            command=command,
-            bg=bg,
-            fg=fg,
-            activebackground=hover or bg,
-            activeforeground=fg,
-            relief="flat",
-            bd=0,
-            padx=14,
-            pady=8,
-            font=_font(10, "bold"),
-            cursor="hand2",
-            highlightthickness=0,
-        )
-
-    def _build_header(self) -> None:
-        header = tk.Frame(self.root, bg=PALETTE["panel"], height=58)
-        header.pack(fill=tk.X)
-        header.pack_propagate(False)
-
-        badge = tk.Label(header, text="CS", bg=PALETTE["accent"], fg="#04121a", font=_font(14, "bold"), width=3)
-        badge.pack(side=tk.LEFT, padx=(16, 10), pady=12)
-        tk.Label(header, text="CobraShield", bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(15, "bold")).pack(side=tk.LEFT)
-        platform_text = "ChromeOS / Chromebook" if self.on_chromebook else "Desktop"
-        tk.Label(header, text=f"  •  {platform_text}", bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(10)).pack(side=tk.LEFT, pady=(4, 0))
-
-    def _build_body(self) -> None:
-        body = tk.Frame(self.root, bg=PALETTE["bg"])
-        body.pack(fill=tk.BOTH, expand=True)
-
-        sidebar = tk.Frame(body, bg=PALETTE["panel"], width=190)
-        sidebar.pack(side=tk.LEFT, fill=tk.Y)
-        sidebar.pack_propagate(False)
-
-        self.content = tk.Frame(body, bg=PALETTE["bg"])
-        self.content.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.nav_buttons: dict[str, tk.Button] = {}
-        for key, label in (
-            ("dashboard", "Dashboard"),
-            ("scan", "Scan Center"),
-            ("quarantine", "Quarantine Vault"),
-            ("guard", "Live Guard"),
-            ("reports", "Reports"),
-        ):
-            btn = tk.Button(
-                sidebar,
-                text=label,
-                anchor="w",
-                command=lambda k=key: self.show_page(k),
-                bg=PALETTE["panel"],
-                fg=PALETTE["muted"],
-                activebackground=PALETTE["panel_alt"],
-                activeforeground=PALETTE["text"],
-                relief="flat",
-                bd=0,
-                padx=18,
-                pady=12,
-                font=_font(10, "bold"),
-                cursor="hand2",
-                highlightthickness=0,
+    def _guard_log(self, message: str, kind: str = "info") -> None:
+        with self.lock:
+            self.guard_events.append(
+                {"time": datetime.now().strftime("%H:%M:%S"), "message": message, "kind": kind}
             )
-            btn.pack(fill=tk.X)
-            self.nav_buttons[key] = btn
+            self.guard_events = self.guard_events[-200:]
 
-        self.pages: dict[str, tk.Frame] = {
-            "dashboard": self._build_dashboard_page(),
-            "scan": self._build_scan_page(),
-            "quarantine": self._build_quarantine_page(),
-            "guard": self._build_guard_page(),
-            "reports": self._build_reports_page(),
+    def _apply_auto_action(self, detection: Detection) -> str:
+        if self.auto_action == "quarantine":
+            try:
+                self.quarantine.quarantine(detection)
+                return f"Auto-quarantined {detection.file_path}"
+            except OSError as err:
+                return f"Failed to quarantine {detection.file_path}: {err}"
+        if self.auto_action == "delete":
+            try:
+                detection.file_path.unlink()
+                return f"Auto-deleted {detection.file_path}"
+            except OSError as err:
+                return f"Failed to delete {detection.file_path}: {err}"
+        return ""
+
+    @staticmethod
+    def _detection_payload(detection: Detection) -> dict:
+        return {
+            "file_path": str(detection.file_path),
+            "signature_name": detection.signature_name,
+            "severity": detection.severity,
+            "detection_type": detection.detection_type,
+            "detail": detection.detail,
         }
 
-    def _build_statusbar(self) -> None:
-        bar = tk.Frame(self.root, bg=PALETTE["panel"], height=26)
-        bar.pack(fill=tk.X, side=tk.BOTTOM)
-        bar.pack_propagate(False)
-        self.statusbar_var = tk.StringVar(value="Ready")
-        tk.Label(bar, textvariable=self.statusbar_var, bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(8)).pack(side=tk.LEFT, padx=12)
-        tk.Label(bar, text="CobraShield v2.0", bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(8)).pack(side=tk.RIGHT, padx=12)
+    # ---------- stats ----------
 
-    def show_page(self, name: str) -> None:
-        for key, frame in self.pages.items():
-            frame.pack_forget()
-            self.nav_buttons[key].configure(bg=PALETTE["panel"], fg=PALETTE["muted"])
-        self.pages[name].pack(fill=tk.BOTH, expand=True)
-        self.nav_buttons[name].configure(bg=PALETTE["panel_alt"], fg=PALETTE["accent"])
-        if name == "dashboard":
-            self.refresh_dashboard()
-        elif name == "quarantine":
-            self.refresh_quarantine_table()
-
-    # ---------- dashboard ----------
-
-    def _build_dashboard_page(self) -> tk.Frame:
-        page = tk.Frame(self.content, bg=PALETTE["bg"])
-
-        top = tk.Frame(page, bg=PALETTE["bg"])
-        top.pack(fill=tk.X, padx=20, pady=20)
-
-        ring_card = tk.Frame(top, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        ring_card.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 14))
-        self.ring_canvas = tk.Canvas(ring_card, width=170, height=170, bg=PALETTE["panel"], highlightthickness=0)
-        self.ring_canvas.pack(padx=18, pady=(16, 4))
-        tk.Label(ring_card, text="Device Health", bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9, "bold")).pack(pady=(0, 14))
-
-        cards = tk.Frame(top, bg=PALETTE["bg"])
-        cards.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.card_vars: dict[str, tk.StringVar] = {}
-        for key, caption in (
-            ("files", "Files scanned (last run)"),
-            ("detections", "Active detections"),
-            ("quarantined", "Threats in vault"),
-            ("tripwires", "Honeyfile tripwires"),
-        ):
-            card = tk.Frame(cards, bg=PALETTE["panel_alt"], highlightbackground=PALETTE["border"], highlightthickness=1)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=6)
-            var = tk.StringVar(value="—")
-            self.card_vars[key] = var
-            tk.Label(card, textvariable=var, bg=PALETTE["panel_alt"], fg=PALETTE["text"], font=_font(24, "bold")).pack(padx=16, pady=(20, 2), anchor="w")
-            tk.Label(card, text=caption, bg=PALETTE["panel_alt"], fg=PALETTE["muted"], font=_font(9), wraplength=140, justify="left").pack(padx=16, pady=(0, 18), anchor="w")
-
-        features = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        features.pack(fill=tk.X, padx=20, pady=(0, 20))
-        tk.Label(features, text="CobraShield-exclusive defenses", bg=PALETTE["panel"], fg=PALETTE["accent"], font=_font(11, "bold")).pack(anchor="w", padx=16, pady=(12, 4))
-        for line in (
-            "•  Honeyfile Tripwires — decoy password/wallet files that scream when ransomware touches them",
-            "•  Live Guard — real-time interception of new files landing in Downloads, Drive and USB storage",
-            "•  Entropy Radar — heuristic engine that sniffs out packed & encrypted payloads with no signature",
-            "•  ChromeOS-native — scans My Files, Google Drive, Play Files and SD cards other AVs can't see",
-        ):
-            tk.Label(features, text=line, bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(10)).pack(anchor="w", padx=16, pady=1)
-        tk.Frame(features, bg=PALETTE["panel"], height=10).pack()
-        return page
-
-    def refresh_dashboard(self) -> None:
+    def get_stats(self) -> dict:
         alerts = self.sentinel.check()
         score, status = compute_health_score(self.last_summary, self.quarantine.count(), len(alerts))
-        self.card_vars["files"].set(f"{self.last_summary.scanned_files:,}")
-        self.card_vars["detections"].set(str(len(self.last_summary.detections)))
-        self.card_vars["quarantined"].set(str(self.quarantine.count()))
-        self.card_vars["tripwires"].set(
-            f"{self.sentinel.planted_count()} OK" if not alerts else f"{len(alerts)} ALERT"
-        )
-        color = PALETTE["success"] if score >= 85 else (PALETTE["warning"] if score >= 60 else PALETTE["danger"])
-        canvas = self.ring_canvas
-        canvas.delete("all")
-        canvas.create_oval(20, 20, 150, 150, outline=PALETTE["border"], width=10)
-        canvas.create_arc(20, 20, 150, 150, start=90, extent=-(score / 100) * 359.9, style="arc", outline=color, width=10)
-        canvas.create_text(85, 78, text=str(score), fill=PALETTE["text"], font=_font(26, "bold"))
-        canvas.create_text(85, 108, text=status, fill=color, font=_font(10, "bold"))
+        return {
+            "user": getpass.getuser().replace(".", " ").title(),
+            "platform": "chromeos" if is_chromebook() else "desktop",
+            "files_scanned": self.last_summary.scanned_files,
+            "detections": len(self.detections),
+            "quarantined": self.quarantine.count(),
+            "tripwires": self.sentinel.planted_count(),
+            "tripwire_alerts": len(alerts),
+            "health_score": score,
+            "health_status": status,
+            "guard_running": self.guard_running(),
+            "last_scan": self.last_scan_at,
+            "detections_list": [self._detection_payload(d) for d in self.detections],
+        }
 
-    # ---------- scan center ----------
+    # ---------- scanning ----------
 
-    def _build_scan_page(self) -> tk.Frame:
-        page = tk.Frame(self.content, bg=PALETTE["bg"])
-
-        controls = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        controls.pack(fill=tk.X, padx=20, pady=(20, 12))
-
-        row = tk.Frame(controls, bg=PALETTE["panel"])
-        row.pack(fill=tk.X, padx=14, pady=12)
-        self._action_button(row, "Full System Scan", lambda: self.start_scan("full"), PALETTE["accent"], PALETTE["accent_hover"]).pack(side=tk.LEFT, padx=(0, 8))
-        self._action_button(row, "Quick Scan", lambda: self.start_scan("quick"), PALETTE["panel_alt"], PALETTE["border"]).pack(side=tk.LEFT, padx=(0, 8))
-        self._action_button(row, "Choose Folder…", lambda: self.start_scan("custom"), PALETTE["panel_alt"], PALETTE["border"]).pack(side=tk.LEFT, padx=(0, 16))
-
-        tk.Label(row, text="On detection:", bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9)).pack(side=tk.LEFT)
-        self.auto_action = tk.StringVar(value=AUTO_ACTIONS[0])
-        combo = ttk.Combobox(row, textvariable=self.auto_action, values=AUTO_ACTIONS, state="readonly", width=16)
-        combo.pack(side=tk.LEFT, padx=(6, 0))
-        combo.bind("<<ComboboxSelected>>", self._on_auto_action_change)
-
-        progress_row = tk.Frame(controls, bg=PALETTE["panel"])
-        progress_row.pack(fill=tk.X, padx=14, pady=(0, 12))
-        self.progress = ttk.Progressbar(progress_row, mode="indeterminate")
-        self.progress.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.scan_status_var = tk.StringVar(value="Idle — pick a scan mode to begin")
-        tk.Label(progress_row, textvariable=self.scan_status_var, bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9)).pack(side=tk.LEFT, padx=(12, 0))
-
-        table_card = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        table_card.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 12))
-
-        columns = ("severity", "file", "signature", "type")
-        self.det_tree = ttk.Treeview(table_card, columns=columns, show="headings", height=14)
-        for col, text, width in (
-            ("severity", "Severity", 90),
-            ("file", "File", 560),
-            ("signature", "Signature", 200),
-            ("type", "Engine", 90),
-        ):
-            self.det_tree.heading(col, text=text)
-            self.det_tree.column(col, width=width, anchor="w")
-        self.det_tree.tag_configure("high", foreground=PALETTE["danger"])
-        self.det_tree.tag_configure("medium", foreground=PALETTE["warning"])
-        self.det_tree.tag_configure("low", foreground=PALETTE["accent"])
-        self.det_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0), pady=10)
-
-        scroll = ttk.Scrollbar(table_card, orient=tk.VERTICAL, command=self.det_tree.yview)
-        self.det_tree.configure(yscroll=scroll.set)
-        scroll.pack(side=tk.LEFT, fill=tk.Y, pady=10, padx=(0, 8))
-
-        self.det_tree.bind("<Button-3>", self._show_detection_menu)
-        self.det_menu = tk.Menu(self.root, tearoff=0, bg=PALETTE["panel_alt"], fg=PALETTE["text"], activebackground=PALETTE["accent_hover"])
-        self.det_menu.add_command(label="Quarantine", command=self.quarantine_selected)
-        self.det_menu.add_command(label="Delete permanently", command=self.delete_selected)
-        self.det_menu.add_separator()
-        self.det_menu.add_command(label="Dismiss from list", command=self.dismiss_selected)
-
-        actions = tk.Frame(page, bg=PALETTE["bg"])
-        actions.pack(fill=tk.X, padx=20, pady=(0, 16))
-        self._action_button(actions, "Quarantine selected", self.quarantine_selected, PALETTE["panel_alt"], PALETTE["border"]).pack(side=tk.LEFT, padx=(0, 8))
-        self._action_button(actions, "Delete selected", self.delete_selected, PALETTE["danger"], PALETTE["danger_hover"]).pack(side=tk.LEFT)
-
-        self._det_by_item: dict[str, Detection] = {}
-        return page
-
-    def start_scan(self, mode: str) -> None:
+    def start_scan(self, mode: str, auto_action: str | None = None) -> None:
         if self.scan_running:
-            return
-        if mode == "custom":
-            folder = filedialog.askdirectory()
-            if not folder:
-                return
-            roots = [Path(folder)]
-        elif mode == "quick":
-            roots = get_quick_scan_roots()
-        else:
-            roots = get_system_scan_roots()
+            raise ApiError("A scan is already running.")
+        if auto_action in ("report", "quarantine", "delete"):
+            self.auto_action = auto_action
+        roots = get_quick_scan_roots() if mode == "quick" else get_system_scan_roots()
         self.scan_running = True
-        self.last_roots = roots
-        self.scan_status_var.set(f"Scanning {len(roots)} root(s)…")
-        self.progress.start(12)
-        self._clear_detection_table()
+        self.scan_mode = mode
+        self.scan_actions = []
+        self.scan_progress = {"current": 0, "total": len(roots), "label": "Starting scan…"}
         threading.Thread(target=self._scan_worker, args=(roots,), daemon=True).start()
 
     def _scan_worker(self, roots: list[Path]) -> None:
         combined = ScanSummary()
-        total = len(roots)
-        for index, root_path in enumerate(roots, start=1):
-            partial = self.scanner.scan_paths([root_path])
-            combined.scanned_files += partial.scanned_files
-            combined.detections.extend(partial.detections)
-            combined.inaccessible_paths.extend(partial.inaccessible_paths)
-            self.root.after(
-                0,
-                lambda i=index, r=root_path, n=partial.scanned_files, t=total:
-                    self.scan_status_var.set(f"[{i}/{t}] {r} — {n:,} files"),
-            )
-        actions = self._apply_auto_action(combined)
-        self.root.after(0, lambda: self._scan_finished(combined, actions))
+        try:
+            for index, root in enumerate(roots, start=1):
+                partial = self.scanner.scan_paths([root])
+                combined.scanned_files += partial.scanned_files
+                combined.inaccessible_paths.extend(partial.inaccessible_paths)
+                for detection in partial.detections:
+                    action_result = self._apply_auto_action(detection)
+                    if action_result:
+                        self.scan_actions.append(action_result)
+                        self._guard_log(action_result, "info")
+                    else:
+                        combined.detections.append(detection)
+                self.scan_progress = {
+                    "current": index,
+                    "total": len(roots),
+                    "label": f"[{index}/{len(roots)}] {root} — {partial.scanned_files:,} files",
+                }
+            with self.lock:
+                self.last_summary = combined
+                self.detections = combined.detections
+                self.last_roots = roots
+                self.last_scan_at = datetime.now().isoformat(timespec="seconds")
+        finally:
+            self.scan_progress["label"] = "Scan complete"
+            self.scan_running = False
 
-    def _apply_auto_action(self, summary: ScanSummary) -> list[str]:
-        choice = self.auto_action.get()
-        results: list[str] = []
-        for detection in summary.detections:
-            if choice == AUTO_ACTIONS[1]:
-                try:
-                    self.quarantine.quarantine(detection)
-                    results.append(f"Quarantined {detection.file_path}")
-                except OSError:
-                    results.append(f"Failed to quarantine {detection.file_path}")
-            elif choice == AUTO_ACTIONS[2]:
-                try:
-                    detection.file_path.unlink()
-                    results.append(f"Deleted {detection.file_path}")
-                except OSError:
-                    results.append(f"Failed to delete {detection.file_path}")
-        return results
+    def scan_status(self) -> dict:
+        result = None
+        if not self.scan_running and self.last_scan_at:
+            result = {
+                "mode": self.scan_mode,
+                "files_scanned": self.last_summary.scanned_files,
+                "detections": [self._detection_payload(d) for d in self.detections],
+                "inaccessible": len(self.last_summary.inaccessible_paths),
+                "actions": self.scan_actions,
+            }
+        return {"running": self.scan_running, **self.scan_progress, "result": result}
 
-    def _scan_finished(self, summary: ScanSummary, actions: list[str]) -> None:
-        self.progress.stop()
-        self.scan_running = False
-        self.last_summary = summary
-        for detection in summary.detections:
-            self._add_detection_row(detection)
-        acted = f" | Auto-actions: {len(actions)}" if actions else ""
-        message = (
-            f"Done — {summary.scanned_files:,} files, {len(summary.detections)} detections, "
-            f"{len(summary.inaccessible_paths)} blocked paths{acted}"
-        )
-        self.scan_status_var.set(message)
-        self.statusbar_var.set(message)
-        self.refresh_dashboard()
-        if summary.detections and not actions:
-            messagebox.showwarning("Threats found", f"{len(summary.detections)} detection(s). Review them in the Scan Center.")
+    # ---------- detections ----------
 
-    def _add_detection_row(self, detection: Detection) -> None:
-        item = self.det_tree.insert(
-            "",
-            tk.END,
-            values=(detection.severity.upper(), str(detection.file_path), detection.signature_name, detection.detection_type),
-            tags=(detection.severity,),
-        )
-        self._det_by_item[item] = detection
-
-    def _clear_detection_table(self) -> None:
-        for item in self.det_tree.get_children():
-            self.det_tree.delete(item)
-        self._det_by_item.clear()
-
-    def _selected_detections(self) -> list[tuple[str, Detection]]:
-        return [(item, self._det_by_item[item]) for item in self.det_tree.selection() if item in self._det_by_item]
-
-    def _show_detection_menu(self, event) -> None:
-        item = self.det_tree.identify_row(event.y)
-        if item:
-            self.det_tree.selection_set(item)
-            self.det_menu.tk_popup(event.x_root, event.y_root)
-
-    def _on_auto_action_change(self, _event=None) -> None:
-        if self.auto_action.get() == AUTO_ACTIONS[2]:
-            messagebox.showwarning("Auto-delete armed", "Detections from future scans will be permanently deleted without prompting.")
-
-    def quarantine_selected(self) -> None:
-        for item, detection in self._selected_detections():
+    def detection_action(self, index: int, action: str) -> dict:
+        try:
+            detection = self.detections[index]
+        except IndexError:
+            raise ApiError("No such detection.")
+        if action == "quarantine":
             try:
-                self.quarantine.quarantine(detection)
-                self.det_tree.delete(item)
-                self._det_by_item.pop(item, None)
+                record = self.quarantine.quarantine(detection)
             except OSError as err:
-                messagebox.showerror("Quarantine failed", f"{detection.file_path}\n{err}")
-        self.refresh_quarantine_table()
-        self.refresh_dashboard()
-
-    def delete_selected(self) -> None:
-        if not self._selected_detections():
-            return
-        if not messagebox.askyesno("Confirm delete", "Permanently delete the selected file(s)? This cannot be undone."):
-            return
-        for item, detection in self._selected_detections():
+                raise ApiError(str(err))
+            self.detections.pop(index)
+            return {"ok": True, "path": record.original_path}
+        if action == "delete":
             try:
                 detection.file_path.unlink()
-                self.det_tree.delete(item)
-                self._det_by_item.pop(item, None)
             except OSError as err:
-                messagebox.showerror("Delete failed", f"{detection.file_path}\n{err}")
-        self.refresh_dashboard()
+                raise ApiError(str(err))
+            self.detections.pop(index)
+            return {"ok": True, "path": str(detection.file_path)}
+        if action == "dismiss":
+            self.detections.pop(index)
+            return {"ok": True, "path": str(detection.file_path)}
+        raise ApiError(f"Unknown action: {action}")
 
-    def dismiss_selected(self) -> None:
-        for item in self.det_tree.selection():
-            self.det_tree.delete(item)
-            self._det_by_item.pop(item, None)
+    # ---------- quarantine ----------
 
-    # ---------- quarantine vault ----------
+    def quarantine_list(self) -> dict:
+        return {"records": [r.__dict__ for r in self.quarantine.list_records()]}
 
-    def _build_quarantine_page(self) -> tk.Frame:
-        page = tk.Frame(self.content, bg=PALETTE["bg"])
-
-        card = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        card.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
-        tk.Label(card, text="Quarantine Vault", bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(13, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(
-            card,
-            text="Isolated threats are neutralized (read-only) and can be restored or permanently destroyed.",
-            bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9),
-        ).pack(anchor="w", padx=16, pady=(0, 10))
-
-        columns = ("original", "signature", "severity", "date")
-        self.q_tree = ttk.Treeview(card, columns=columns, show="headings", height=14)
-        for col, text, width in (
-            ("original", "Original location", 500),
-            ("signature", "Signature", 190),
-            ("severity", "Severity", 90),
-            ("date", "Quarantined at", 170),
-        ):
-            self.q_tree.heading(col, text=text)
-            self.q_tree.column(col, width=width, anchor="w")
-        self.q_tree.tag_configure("high", foreground=PALETTE["danger"])
-        self.q_tree.tag_configure("medium", foreground=PALETTE["warning"])
-        self.q_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(14, 0), pady=(0, 12))
-        scroll = ttk.Scrollbar(card, orient=tk.VERTICAL, command=self.q_tree.yview)
-        self.q_tree.configure(yscroll=scroll.set)
-        scroll.pack(side=tk.LEFT, fill=tk.Y, pady=(0, 12), padx=(0, 10))
-
-        btns = tk.Frame(page, bg=PALETTE["bg"])
-        btns.pack(fill=tk.X, padx=20, pady=(0, 18))
-        self._action_button(btns, "Restore selected", self.restore_selected_quarantine, PALETTE["panel_alt"], PALETTE["border"]).pack(side=tk.LEFT, padx=(0, 8))
-        self._action_button(btns, "Destroy selected", self.delete_selected_quarantine, PALETTE["danger"], PALETTE["danger_hover"]).pack(side=tk.LEFT)
-
-        self._q_by_item: dict[str, str] = {}
-        return page
-
-    def refresh_quarantine_table(self) -> None:
-        for item in self.q_tree.get_children():
-            self.q_tree.delete(item)
-        self._q_by_item.clear()
-        for record in self.quarantine.list_records():
-            item = self.q_tree.insert(
-                "",
-                tk.END,
-                values=(record.original_path, record.signature_name, record.severity.upper(), record.quarantined_at),
-                tags=(record.severity,),
-            )
-            self._q_by_item[item] = record.record_id
-
-    def restore_selected_quarantine(self) -> None:
-        for item in self.q_tree.selection():
-            record_id = self._q_by_item.get(item)
-            if not record_id:
-                continue
+    def quarantine_action(self, record_id: str, action: str) -> dict:
+        if action == "restore":
             try:
                 restored = self.quarantine.restore(record_id)
-                self.q_tree.delete(item)
-                self._q_by_item.pop(item, None)
-                messagebox.showinfo("Restored", f"File restored to:\n{restored}")
             except (OSError, KeyError) as err:
-                messagebox.showerror("Restore failed", str(err))
-        self.refresh_dashboard()
+                raise ApiError(str(err))
+            return {"ok": True, "path": str(restored)}
+        if action == "delete":
+            self.quarantine.delete(record_id)
+            return {"ok": True, "path": record_id}
+        raise ApiError(f"Unknown action: {action}")
 
-    def delete_selected_quarantine(self) -> None:
-        if not self.q_tree.selection():
-            return
-        if not messagebox.askyesno("Confirm destroy", "Permanently destroy quarantined file(s)? This cannot be undone."):
-            return
-        for item in self.q_tree.selection():
-            record_id = self._q_by_item.get(item)
-            if record_id:
-                self.quarantine.delete(record_id)
-                self.q_tree.delete(item)
-                self._q_by_item.pop(item, None)
-        self.refresh_dashboard()
+    # ---------- honeyfiles ----------
 
-    # ---------- live guard & honeyfiles ----------
-
-    def _build_guard_page(self) -> tk.Frame:
-        page = tk.Frame(self.content, bg=PALETTE["bg"])
-
-        honey = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        honey.pack(fill=tk.X, padx=20, pady=(20, 12))
-        tk.Label(honey, text="Honeyfile Tripwires", bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(12, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(
-            honey,
-            text="Plants irresistible decoy files (passwords, wallet keys) across your folders. "
-                 "If ransomware or an infostealer touches one, you get an instant alarm.",
-            bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9), wraplength=860, justify="left",
-        ).pack(anchor="w", padx=16)
-        row = tk.Frame(honey, bg=PALETTE["panel"])
-        row.pack(fill=tk.X, padx=16, pady=12)
-        self._action_button(row, "Plant tripwires", self.plant_honeyfiles, PALETTE["accent"], PALETTE["accent_hover"]).pack(side=tk.LEFT, padx=(0, 8))
-        self._action_button(row, "Check integrity now", self.check_honeyfiles, PALETTE["panel_alt"], PALETTE["border"]).pack(side=tk.LEFT)
-        self.honey_status_var = tk.StringVar(value="No tripwires planted yet")
-        tk.Label(row, textvariable=self.honey_status_var, bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9)).pack(side=tk.LEFT, padx=(10, 0))
-
-        guard = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        guard.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 20))
-        tk.Label(guard, text="Live Guard — real-time file interception", bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(12, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(
-            guard,
-            text="Watches your Downloads, Drive and removable storage. Every new or changed file is scanned "
-                 "the moment it lands — before it can run. Uses the Scan Center's on-detection action.",
-            bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9), wraplength=860, justify="left",
-        ).pack(anchor="w", padx=16)
-
-        row2 = tk.Frame(guard, bg=PALETTE["panel"])
-        row2.pack(fill=tk.X, padx=16, pady=10)
-        self.guard_button = self._action_button(row2, "Start Live Guard", self.toggle_guard, PALETTE["success"])
-        self.guard_button.pack(side=tk.LEFT)
-        self.guard_status_var = tk.StringVar(value="Live Guard is off")
-        tk.Label(row2, textvariable=self.guard_status_var, bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9)).pack(side=tk.LEFT, padx=(10, 0))
-
-        self.guard_log = tk.Text(
-            guard,
-            height=10,
-            bg=PALETTE["panel_alt"],
-            fg=PALETTE["text"],
-            insertbackground=PALETTE["text"],
-            relief="flat",
-            font=_font(9),
-            state="disabled",
-        )
-        self.guard_log.pack(fill=tk.BOTH, expand=True, padx=16, pady=(0, 14))
-        return page
-
-    def plant_honeyfiles(self) -> None:
+    def honeyfiles_plant(self) -> dict:
         planted = self.sentinel.plant(self.sentinel.default_directories())
-        total = self.sentinel.planted_count()
-        self.honey_status_var.set(f"{total} tripwire(s) armed ({len(planted)} new)")
-        self._guard_log_line(f"Planted {len(planted)} honeyfile tripwire(s); {total} total armed.")
-        self.refresh_dashboard()
+        return {"planted": len(planted), "total": self.sentinel.planted_count()}
 
-    def check_honeyfiles(self) -> None:
+    def honeyfiles_check(self) -> dict:
         alerts = self.sentinel.check()
-        if not alerts:
-            self.honey_status_var.set(f"All {self.sentinel.planted_count()} tripwires intact")
-        else:
-            self.honey_status_var.set(f"WARNING: {len(alerts)} tripwire alert(s)")
-            for path, status in alerts:
-                self._guard_log_line(f"TRIPWIRE {status.upper()}: {path}")
-            messagebox.showwarning("Tripwire triggered", "\n".join(f"{s.upper()}: {p}" for p, s in alerts))
-        self.refresh_dashboard()
+        return {
+            "total": self.sentinel.planted_count(),
+            "alerts": [{"path": str(p), "status": s} for p, s in alerts],
+        }
 
-    def toggle_guard(self) -> None:
-        if self.guard_active:
+    # ---------- live guard ----------
+
+    def guard_running(self) -> bool:
+        return self.guard_thread is not None and self.guard_thread.is_alive()
+
+    def guard_toggle(self) -> dict:
+        if self.guard_running():
             self.guard_stop.set()
-            self.guard_active = False
-            self.guard_button.configure(text="Start Live Guard", bg=PALETTE["success"])
-            self.guard_status_var.set("Live Guard stopped")
-            self._guard_log_line("Live Guard stopped.")
-            return
+            self.guard_thread = None
+            self._guard_log("Live Guard stopped.")
+            return {"running": False}
         roots = get_quick_scan_roots()
         self.guard_stop.clear()
         self.guard_thread = threading.Thread(target=self._guard_loop, args=(roots,), daemon=True)
         self.guard_thread.start()
-        self.guard_active = True
-        self.guard_button.configure(text="Stop Live Guard", bg=PALETTE["danger"])
-        self.guard_status_var.set("Watching: " + ", ".join(str(r) for r in roots))
-        self._guard_log_line("Live Guard armed. Baseline snapshot taken; new/changed files will be scanned.")
+        self._guard_log("Live Guard armed — baseline snapshot taken.")
+        return {"running": True, "roots": [str(r) for r in roots]}
 
     def _guard_loop(self, roots: list[Path]) -> None:
         seen: dict[Path, float] = {}
         baseline = True
         while not self.guard_stop.is_set():
-            for root_path in roots:
-                for dirpath, directories, files in os.walk(root_path, onerror=lambda _: None):
+            for root in roots:
+                for dirpath, directories, files in os.walk(root, onerror=lambda _: None):
                     directories[:] = [
                         d for d in directories
                         if not MalwareScanner._is_virtual_dir(Path(dirpath) / d)
@@ -639,81 +256,130 @@ class CobraShieldApp:
                             continue
                         if stat.st_size > 64 * 1024 * 1024:
                             continue
-                        mtime = stat.st_mtime
-                        if seen.get(candidate) == mtime:
+                        if seen.get(candidate) == stat.st_mtime:
                             continue
-                        seen[candidate] = mtime
+                        seen[candidate] = stat.st_mtime
                         if baseline:
                             continue
                         for detection in self.scanner.scan_file(candidate):
-                            self.root.after(0, lambda det=detection: self._guard_detection(det))
+                            msg = f"[{detection.severity.upper()}] {detection.file_path} — {detection.signature_name}"
+                            action_result = self._apply_auto_action(detection)
+                            if action_result:
+                                msg += " → " + action_result
+                            else:
+                                with self.lock:
+                                    self.detections.append(detection)
+                            self._guard_log(msg, "detection")
             baseline = False
             self.guard_stop.wait(3.0)
 
-    def _guard_detection(self, detection: Detection) -> None:
-        self._guard_log_line(f"[{detection.severity.upper()}] {detection.file_path} — {detection.signature_name}")
-        self.last_summary.detections.append(detection)
-        self._add_detection_row(detection)
-        choice = self.auto_action.get()
-        if choice == AUTO_ACTIONS[1]:
-            try:
-                self.quarantine.quarantine(detection)
-                self._guard_log_line("  -> auto-quarantined")
-            except OSError as err:
-                self._guard_log_line(f"  -> quarantine failed: {err}")
-        elif choice == AUTO_ACTIONS[2]:
-            try:
-                detection.file_path.unlink()
-                self._guard_log_line("  -> auto-deleted")
-            except OSError as err:
-                self._guard_log_line(f"  -> delete failed: {err}")
-        self.refresh_dashboard()
+    def guard_events_since(self) -> dict:
+        with self.lock:
+            events = self.guard_events[:]
+            self.guard_events.clear()
+        return {"events": events, "running": self.guard_running()}
 
-    def _guard_log_line(self, text: str) -> None:
-        self.guard_log.configure(state="normal")
-        self.guard_log.insert(tk.END, f"[{datetime.now():%H:%M:%S}] {text}\n")
-        self.guard_log.see(tk.END)
-        self.guard_log.configure(state="disabled")
+    # ---------- report ----------
 
-    # ---------- reports ----------
-
-    def _build_reports_page(self) -> tk.Frame:
-        page = tk.Frame(self.content, bg=PALETTE["bg"])
-        card = tk.Frame(page, bg=PALETTE["panel"], highlightbackground=PALETTE["border"], highlightthickness=1)
-        card.pack(fill=tk.X, padx=20, pady=20)
-        tk.Label(card, text="Threat Reports", bg=PALETTE["panel"], fg=PALETTE["text"], font=_font(13, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
-        tk.Label(
-            card,
-            text="Export a shareable dark-themed HTML report of the latest scan — handy for IT support or bragging rights.",
-            bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9), wraplength=860, justify="left",
-        ).pack(anchor="w", padx=16)
-        row = tk.Frame(card, bg=PALETTE["panel"])
-        row.pack(fill=tk.X, padx=16, pady=14)
-        self._action_button(row, "Export HTML report", self.export_report, PALETTE["accent"], PALETTE["accent_hover"]).pack(side=tk.LEFT)
-        self.report_status_var = tk.StringVar(value="Run a scan first, then export its results.")
-        tk.Label(row, textvariable=self.report_status_var, bg=PALETTE["panel"], fg=PALETTE["muted"], font=_font(9)).pack(side=tk.LEFT, padx=(12, 0))
-        return page
-
-    def export_report(self) -> None:
+    def report_export(self) -> dict:
         if not self.last_roots:
-            messagebox.showinfo("Nothing to report", "Run a scan first.")
-            return
-        default_name = f"cobrashield-report-{datetime.now():%Y%m%d-%H%M%S}.html"
-        target = filedialog.asksaveasfilename(
-            defaultextension=".html",
-            initialfile=default_name,
-            filetypes=[("HTML report", "*.html")],
-        )
-        if not target:
-            return
-        path = export_html_report(self.last_summary, self.last_roots, Path(target), quarantined=self.quarantine.count())
-        self.report_status_var.set(f"Saved: {path}")
+            raise ApiError("Run a scan first.")
+        REPORT_DIR.mkdir(parents=True, exist_ok=True)
+        target = REPORT_DIR / f"cobrashield-report-{datetime.now():%Y%m%d-%H%M%S}.html"
+        export_html_report(self.last_summary, self.last_roots, target, quarantined=self.quarantine.count())
+        return {"ok": True, "path": str(target)}
 
-    # ---------- lifecycle ----------
-
-    def _on_close(self) -> None:
+    def shutdown(self) -> None:
         self.guard_stop.set()
-        self.root.destroy()
+
+
+class ApiHandler(BaseHTTPRequestHandler):
+    service: CobraShieldService  # injected by serve()
+
+    def log_message(self, *_args) -> None:  # silence request logs
+        pass
+
+    def _send_json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except (json.JSONDecodeError, ValueError):
+            return {}
+
+    def do_GET(self) -> None:
+        if self.path in ("/", "/index.html", "/app.html"):
+            body = APP_HTML_PATH.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path == "/api/stats":
+            self._send_json(self.service.get_stats())
+            return
+        if self.path == "/api/scan/status":
+            self._send_json(self.service.scan_status())
+            return
+        if self.path == "/api/detections":
+            self._send_json({"detections": [self.service._detection_payload(d) for d in self.service.detections]})
+            return
+        if self.path == "/api/quarantine/list":
+            self._send_json(self.service.quarantine_list())
+            return
+        if self.path == "/api/honeyfiles/check":
+            self._send_json(self.service.honeyfiles_check())
+            return
+        if self.path == "/api/guard/events":
+            self._send_json(self.service.guard_events_since())
+            return
+        self._send_json({"error": "not found"}, 404)
+
+    def do_POST(self) -> None:
+        body = self._read_body()
+        try:
+            if self.path == "/api/scan/start":
+                self.service.start_scan(body.get("mode", "quick"), body.get("auto_action"))
+                self._send_json({"ok": True})
+                return
+            if self.path == "/api/auto-action":
+                self.service.auto_action = body.get("value", "report")
+                self._send_json({"ok": True})
+                return
+            if self.path == "/api/detection/action":
+                self._send_json(self.service.detection_action(int(body.get("index", -1)), body.get("action", "")))
+                return
+            if self.path == "/api/quarantine/action":
+                self._send_json(self.service.quarantine_action(body.get("id", ""), body.get("action", "")))
+                return
+            if self.path == "/api/honeyfiles/plant":
+                self._send_json(self.service.honeyfiles_plant())
+                return
+            if self.path == "/api/guard/toggle":
+                self._send_json(self.service.guard_toggle())
+                return
+            if self.path == "/api/report/export":
+                self._send_json(self.service.report_export())
+                return
+            self._send_json({"error": "not found"}, 404)
+        except ApiError as err:
+            self._send_json({"ok": False, "error": str(err)}, 400)
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 def run_cli_scan(auto_action: str = "report", quick: bool = False) -> None:
@@ -764,6 +430,25 @@ def run_cli_scan(auto_action: str = "report", quick: bool = False) -> None:
         print("\nNo threats detected.")
 
 
+def serve(port: int | None = None, open_browser: bool = True) -> None:
+    service = CobraShieldService()
+    ApiHandler.service = service
+    port = port or _free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), ApiHandler)
+    url = f"http://127.0.0.1:{port}/"
+    print("CobraShield Protection Center")
+    print(f"Running at {url}  (Ctrl+C to stop)")
+    if open_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        service.shutdown()
+        server.server_close()
+
+
 def main() -> None:
     argv = sys.argv[1:]
     if "--cli" in argv:
@@ -775,15 +460,14 @@ def main() -> None:
         run_cli_scan(auto_action=action, quick="--quick" in argv)
         return
 
-    try:
-        root = tk.Tk()
-    except tk.TclError as err:
-        print(f"Graphical display not available ({err}). Falling back to CLI mode.\n")
-        run_cli_scan()
-        return
-
-    CobraShieldApp(root)
-    root.mainloop()
+    port = None
+    for i, arg in enumerate(argv):
+        if arg == "--port" and i + 1 < len(argv):
+            try:
+                port = int(argv[i + 1])
+            except ValueError:
+                pass
+    serve(port=port, open_browser="--no-browser" not in argv)
 
 
 if __name__ == "__main__":
