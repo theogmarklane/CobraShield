@@ -1,0 +1,9 @@
+# CobraShield has no third-party pip dependencies.
+# The scanner, UI, and tests use only the Python standard library
+# (pathlib, dataclasses, threading, tkinter, unittest, etc.).
+#
+# Python 3.10+ is required (uses `X | None` type syntax).
+#
+# NOTE: The UI (cobra_shield_ui.py) needs tkinter, which is part of the
+# standard library but ships as a separate OS package on some Linux distros:
+#   sudo apt install python3-tk

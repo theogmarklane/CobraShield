@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+import threading
 import tkinter as tk
 from tkinter import ttk
-import threading
 
-from scanner import MalwareScanner, get_system_scan_roots
+from scanner import MalwareScanner, get_system_scan_roots, is_chromebook
 
 
 class CobraShieldApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("CobraShield Antivirus")
+        title_suffix = " (Chromebook Compatible)" if is_chromebook() else ""
+        self.root.title(f"CobraShield Antivirus{title_suffix}")
         self.root.geometry("860x560")
 
         self.scanner = MalwareScanner()
@@ -22,15 +24,25 @@ class CobraShieldApp:
         frame = ttk.Frame(root, padding=14)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(
-            frame,
-            text="CobraShield Full-PC Antivirus Scanner",
-            font=("Segoe UI", 14, "bold"),
-        ).pack(anchor=tk.W)
+        header_text = "CobraShield Antivirus Scanner"
+        if is_chromebook():
+            header_text += " - Chromebook / ChromeOS Edition"
 
         ttk.Label(
             frame,
-            text="Scans all system roots that this process can access.",
+            text=header_text,
+            font=("Segoe UI", 14, "bold"),
+        ).pack(anchor=tk.W)
+
+        subtitle_text = (
+            "Scans system roots and ChromeOS shared files (My Files, Google Drive, SD cards)."
+            if is_chromebook()
+            else "Scans all system roots that this process can access."
+        )
+
+        ttk.Label(
+            frame,
+            text=subtitle_text,
         ).pack(anchor=tk.W, pady=(2, 8))
 
         action_row = ttk.Frame(frame)
@@ -38,7 +50,7 @@ class CobraShieldApp:
 
         self.scan_button = ttk.Button(
             action_row,
-            text="Scan Entire PC",
+            text="Scan System & Storage",
             command=self.start_full_scan,
         )
         self.scan_button.pack(side=tk.LEFT)
@@ -96,10 +108,45 @@ class CobraShieldApp:
             self.detections_table.delete(item_id)
 
 
+def run_cli_scan() -> None:
+    print("CobraShield Antivirus Scanner")
+    print("=============================")
+    if is_chromebook():
+        print("Platform: Chromebook / ChromeOS Environment Detected")
+    else:
+        print("Platform: Standard System Environment")
+
+    scanner = MalwareScanner()
+    roots = get_system_scan_roots()
+    print(f"Scanning scan roots: {', '.join(str(r) for r in roots)}...")
+
+    summary = scanner.scan_paths(roots)
+
+    print("\nScan Results:")
+    print(f"  Scanned files: {summary.scanned_files}")
+    print(f"  Inaccessible paths: {len(summary.inaccessible_paths)}")
+    print(f"  Detections: {len(summary.detections)}")
+
+    if summary.detections:
+        print("\nDetections list:")
+        for detection in summary.detections:
+            print(f"  - [{detection.signature_name}] {detection.file_path}")
+    else:
+        print("\nNo threats detected.")
+
+
 def main() -> None:
-    root = tk.Tk()
-    CobraShieldApp(root)
-    root.mainloop()
+    if "--cli" in sys.argv:
+        run_cli_scan()
+        return
+
+    try:
+        root = tk.Tk()
+        CobraShieldApp(root)
+        root.mainloop()
+    except tk.TclError as err:
+        print(f"Graphical display not available ({err}). Falling back to CLI mode.\n")
+        run_cli_scan()
 
 
 if __name__ == "__main__":
