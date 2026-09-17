@@ -17,6 +17,14 @@ CobraShield is a desktop antivirus prototype focused on full-system scanning wit
 - **Live UI & CLI Fallback**: Run via graphical interface or headless CLI mode (`--cli` or auto-fallback on displayless Chromebook setups).
 - **Signature detections**: Identifies known malware test signatures (including EICAR).
 - **False-positive guard**: Never flags CobraShield's own data (quarantine vault, reports, tripwire state) — quarantined malware bytes can't re-trigger scans. **Allowlist** lets you mark known-safe files (by SHA-256 or path) so they're never flagged again.
+- **Scheduled scans**: Set-and-forget automatic re-scans (every 6h → weekly), configurable from the System page.
+- **Startup & persistence audit**: Lists everything configured to launch at boot/login — autostart entries, cron jobs, and on Windows the Startup folder + registry Run keys — with risk flags for temp-directory launches and encoded commands.
+- **Browser extension audit**: Inventories Chrome, Edge, Brave and Chromium extensions and flags dangerous permission combos (cookies + all URLs etc.) — the #1 infostealer vector on Chromebooks.
+- **Network connection audit**: Snapshots outbound connections and listeners; flags unusual destination ports and open listeners.
+- **Suspicious process heuristics**: Reviews running processes for encoded script-engine commands and binaries launched from temp directories (Windows: via `wmic`; Linux: via `/proc`).
+- **Signature packs**: Drop `.txt` files (one signature per line) into `~/.cobrashield/signatures/` and load community threat feeds or custom IOCs from the System page.
+- **Threat history**: Persistent JSON timeline of scans, detections and actions, surfaced live in the Overview protection timeline.
+- **Cross-platform**: Windows (registry/Startup-folder audits, `Path.home()` state), Linux, and ChromeOS/Crostini all supported — pure stdlib, zero dependencies.
 - **Access tracking**: Reports blocked/inaccessible paths encountered during scan.
 
 ## Run
@@ -34,7 +42,7 @@ python cobra_shield_ui.py --no-browser   # don't auto-open a browser tab
 python cobra_shield_ui.py --port 8080    # serve on a fixed port
 ```
 
-The UI has four pages: **Overview** (health ring, stat cards, protection timeline), **Threats** (smart/full scans, auto-actions, per-detection quarantine/delete), **Vault** (restore or destroy quarantined files), and **Live Guard** (honeyfile tripwires + real-time file interception with an activity log).
+The UI has five pages: **Overview** (health ring, stat cards, live protection timeline), **Threats** (smart/full scans, auto-actions, per-detection quarantine/delete/safe, allowlist manager), **Vault** (restore or destroy quarantined files), **Live Guard** (honeyfile tripwires + real-time file interception with an activity log), and **System** (scheduled scans, signature packs, startup/extension/network/process audits).
 
 ### CLI Mode (Ideal for Chromebook / Headless Terminals)
 ```bash

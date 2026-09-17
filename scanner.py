@@ -4,13 +4,16 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 import hashlib
 import html
 import json
 import math
 import os
 import shutil
+import socket
+import subprocess
+import threading
 import uuid
 
 
@@ -508,6 +511,610 @@ class QuarantineManager:
         except OSError:
             pass
         self._save_records([r for r in records if r["record_id"] != record_id])
+
+
+class HoneyfileSentinel:
+    """Plants decoy 'honeyfile' tripwires that ransomware and infostealers love to touch.
+
+    If a honeyfile is modified or deleted, something hostile is tampering with the
+    folder — a classic tripwire defense consumer AVs don't ship.
+    """
+
+    MARKER = "CSHL-TRIPWIRE"
+    DEFAULT_NAMES = (
+        "Passwords-Backup.txt",
+        "Wallet-Recovery-Keys.txt",
+        "Tax-Returns-2026.pdf.txt",
+    )
+
+    def __init__(self, state_file: Path | None = None) -> None:
+        self.state_file = state_file or (Path.home() / ".cobrashield" / "honeyfiles.json")
+
+    def _load_state(self) -> dict[str, str]:
+        if not self.state_file.exists():
+            return {}
+        try:
+            return json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _save_state(self, state: dict[str, str]) -> None:
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    def default_directories(self) -> list[Path]:
+        directories = [Path.home()]
+        for extra in (
+            Path.home() / "Documents",
+            Path.home() / "Downloads",
+            Path("/mnt/chromeos/MyFiles"),
+            Path("/mnt/chromeos/GoogleDrive/MyDrive"),
+        ):
+            if extra.is_dir() and extra not in directories:
+                directories.append(extra)
+        return directories
+
+    def plant(self, directories: Iterable[Path]) -> list[Path]:
+        planted: list[Path] = []
+        state = self._load_state()
+        token = uuid.uuid4().hex
+        for directory in directories:
+            directory = Path(directory)
+            if not directory.is_dir():
+                continue
+            for name in self.DEFAULT_NAMES:
+                target = directory / name
+                if target.exists():
+                    continue
+                try:
+                    target.write_text(
+                        f"{self.MARKER}::{token}\n"
+                        "Decoy file planted by CobraShield. Do not modify or delete.\n",
+                        encoding="utf-8",
+                    )
+                    state[str(target)] = self._digest(target)
+                    planted.append(target)
+                except OSError:
+                    continue
+        self._save_state(state)
+        return planted
+
+    def check(self) -> list[tuple[Path, str]]:
+        """Return (path, status) alerts where status is 'modified', 'deleted' or 'unreadable'."""
+        alerts: list[tuple[Path, str]] = []
+        for raw_path, digest in self._load_state().items():
+            path = Path(raw_path)
+            if not path.exists():
+                alerts.append((path, "deleted"))
+                continue
+            try:
+                if self._digest(path) != digest:
+                    alerts.append((path, "modified"))
+            except OSError:
+                alerts.append((path, "unreadable"))
+        return alerts
+
+    def planted_count(self) -> int:
+        return len(self._load_state())
+
+
+@dataclass
+class StartupEntry:
+    source: str
+    name: str
+    location: str
+    risk: str  # "low" | "medium" | "high"
+    note: str
+
+
+class StartupAuditor:
+    """Flags persistence mechanisms: things configured to launch at boot/login.
+
+    Works on Linux/ChromeOS (autostart .desktop files, crontab) and Windows
+    (Startup folder, Run registry keys via reg.exe).
+    """
+
+    SUSPICIOUS_KEYWORDS = (
+        "temp", "tmp", "appdata\\local\\temp", "/tmp/", "powershell -e",
+        "powershell.exe -w hidden", "base64", "curl ", "wget ", "http://",
+        "rundll32", "regsvr32", "mshta",
+    )
+
+    def audit(self) -> list[StartupEntry]:
+        entries: list[StartupEntry] = []
+        entries.extend(self._autostart_dirs())
+        entries.extend(self._crontab())
+        if os.name == "nt":
+            entries.extend(self._windows_startup_folder())
+            entries.extend(self._windows_registry_run_keys())
+        return entries
+
+    def _risk_of(self, text: str) -> tuple[str, str]:
+        lowered = text.lower()
+        for keyword in self.SUSPICIOUS_KEYWORDS:
+            if keyword in lowered:
+                return "high", f"Suspicious pattern '{keyword.strip()}' in launch command"
+        if lowered.startswith(("/tmp", "/dev/shm")) or "\\temp\\" in lowered:
+            return "high", "Launches from a temporary directory"
+        return "low", "Standard autostart entry"
+
+    def _autostart_dirs(self) -> list[StartupEntry]:
+        entries: list[StartupEntry] = []
+        candidates = [
+            Path.home() / ".config" / "autostart",
+            Path("/etc/xdg/autostart"),
+        ]
+        for directory in candidates:
+            if not directory.is_dir():
+                continue
+            try:
+                children = sorted(directory.iterdir())
+            except OSError:
+                continue
+            for child in children:
+                if child.suffix != ".desktop":
+                    continue
+                try:
+                    content = child.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+                exec_line = next(
+                    (line.split("=", 1)[1].strip() for line in content.splitlines() if line.startswith("Exec=")),
+                    "",
+                )
+                risk, note = self._risk_of(exec_line)
+                entries.append(StartupEntry(
+                    source="autostart",
+                    name=child.stem,
+                    location=exec_line or str(child),
+                    risk=risk,
+                    note=note,
+                ))
+        return entries
+
+    def _crontab(self) -> list[StartupEntry]:
+        entries: list[StartupEntry] = []
+        if os.name == "nt":
+            return entries
+        try:
+            result = subprocess.run(
+                ["crontab", "-l"], capture_output=True, text=True, timeout=5,
+            )
+            lines = result.stdout.splitlines() if result.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            lines = []
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            risk, note = self._risk_of(line)
+            entries.append(StartupEntry(
+                source="crontab",
+                name=line[:40] + ("…" if len(line) > 40 else ""),
+                location=line,
+                risk=risk,
+                note=note,
+            ))
+        return entries
+
+    def _windows_startup_folder(self) -> list[StartupEntry]:
+        entries: list[StartupEntry] = []
+        startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        if not startup.is_dir():
+            return entries
+        try:
+            children = sorted(startup.iterdir())
+        except OSError:
+            return entries
+        for child in children:
+            risk, note = self._risk_of(child.name)
+            entries.append(StartupEntry(
+                source="startup-folder",
+                name=child.name,
+                location=str(child),
+                risk=risk,
+                note=note,
+            ))
+        return entries
+
+    def _windows_registry_run_keys(self) -> list[StartupEntry]:
+        entries: list[StartupEntry] = []
+        keys = (
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run",
+        )
+        for key in keys:
+            try:
+                result = subprocess.run(
+                    ["reg", "query", key], capture_output=True, text=True, timeout=10,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                parts = line.split("    ")
+                parts = [p.strip() for p in parts if p.strip()]
+                if len(parts) < 3:
+                    continue
+                name, _, command = parts[0], parts[1], " ".join(parts[2:])
+                risk, note = self._risk_of(command)
+                entries.append(StartupEntry(
+                    source="registry-run",
+                    name=name,
+                    location=command,
+                    risk=risk,
+                    note=note,
+                ))
+        return entries
+
+
+@dataclass
+class ExtensionEntry:
+    browser: str
+    name: str
+    extension_id: str
+    risk: str
+    note: str
+
+
+class BrowserExtensionAuditor:
+    """Inventories Chromium browser extensions (Chrome, Edge, Brave) and scores risk.
+
+    Browser extensions are the #1 infostealer vector on Chromebooks and PCs.
+    """
+
+    CHROME_RELATIVE = {
+        "nt": [
+            ("Chrome", Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data"),
+            ("Edge", Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Edge" / "User Data"),
+            ("Brave", Path(os.environ.get("LOCALAPPDATA", "")) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ],
+        "posix": [
+            ("Chrome", Path.home() / ".config" / "google-chrome"),
+            ("Chromium", Path.home() / ".config" / "chromium"),
+            ("Brave", Path.home() / ".config" / "BraveSoftware" / "Brave-Browser"),
+            ("Edge", Path.home() / ".config" / "microsoft-edge"),
+        ],
+    }
+
+    RISKY_PERMISSIONS = (
+        "<all_urls>", "cookies", "webrequest", "webrequestblocking",
+        "debugger", "nativemessaging", "clipboardread", "history",
+    )
+
+    def audit(self) -> list[ExtensionEntry]:
+        findings: list[ExtensionEntry] = []
+        for browser, user_data in self.CHROME_RELATIVE["nt" if os.name == "nt" else "posix"]:
+            if not user_data.is_dir():
+                continue
+            for profile in sorted(user_data.iterdir()):
+                if profile.name not in ("Default", "Guest Profile") and not profile.name.startswith("Profile "):
+                    continue
+                ext_dir = profile / "Extensions"
+                if not ext_dir.is_dir():
+                    continue
+                try:
+                    ext_ids = sorted(ext_dir.iterdir())
+                except OSError:
+                    continue
+                for ext_id_dir in ext_ids:
+                    finding = self._inspect_extension(browser, ext_id_dir)
+                    if finding is not None:
+                        findings.append(finding)
+        return findings
+
+    def _inspect_extension(self, browser: str, ext_id_dir: Path) -> ExtensionEntry | None:
+        manifest_path: Path | None = None
+        try:
+            versions = sorted(ext_id_dir.iterdir())
+        except OSError:
+            return None
+        for version in versions:
+            candidate = version / "manifest.json"
+            if candidate.exists():
+                manifest_path = candidate
+                break
+        if manifest_path is None:
+            return None
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
+        except (OSError, json.JSONDecodeError):
+            return ExtensionEntry(browser, "(unreadable manifest)", ext_id_dir.name, "medium", "Manifest could not be parsed")
+
+        name = str(manifest.get("name", ext_id_dir.name))
+        if name.startswith("__MSG_"):
+            name = name.strip("_")[:6].upper() + "…"
+        permissions = [str(p).lower() for p in manifest.get("permissions", [])]
+        host_permissions = [str(p).lower() for p in manifest.get("host_permissions", [])]
+        granted = permissions + host_permissions
+
+        hits = [p for p in granted if any(r in p for r in self.RISKY_PERMISSIONS)]
+        if len(hits) >= 3 or "<all_urls>" in granted and "cookies" in granted:
+            risk, note = "high", f"Powerful permissions: {', '.join(hits[:4])}"
+        elif hits:
+            risk, note = "medium", f"Notable permissions: {', '.join(hits[:3])}"
+        else:
+            risk, note = "low", "Standard permissions"
+        return ExtensionEntry(browser, name, ext_id_dir.name, risk, note)
+
+
+@dataclass
+class ConnectionEntry:
+    process: str
+    local: str
+    remote: str
+    state: str
+    risk: str
+    note: str
+
+
+class NetworkAuditor:
+    """Snapshots outbound connections and flags plain-HTTP listeners and odd ports."""
+
+    COMMON_SAFE_PORTS = {80, 443, 53, 123, 993, 587, 465, 22, 853, 5353}
+
+    def audit(self) -> list[ConnectionEntry]:
+        entries: list[ConnectionEntry] = []
+        if os.name == "nt":
+            rows = self._netstat_windows()
+        else:
+            rows = self._ss_posix()
+        for process, local, remote, state in rows:
+            risk = "low"
+            note = ""
+            if remote:
+                port = self._port_of(remote)
+                if state.upper().startswith("LISTEN"):
+                    risk, note = "medium", "Listening for inbound connections"
+                elif port is not None and port not in self.COMMON_SAFE_PORTS:
+                    risk, note = "medium", f"Unusual destination port {port}"
+            entries.append(ConnectionEntry(process, local, remote, state, risk, note or "Standard connection"))
+        return entries
+
+    @staticmethod
+    def _port_of(address: str) -> int | None:
+        try:
+            return int(address.rsplit(":", 1)[1])
+        except (ValueError, IndexError):
+            return None
+
+    def _ss_posix(self) -> list[tuple[str, str, str, str]]:
+        try:
+            result = subprocess.run(
+                ["ss", "-tunap"], capture_output=True, text=True, timeout=8,
+            )
+            lines = result.stdout.splitlines() if result.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        rows: list[tuple[str, str, str, str]] = []
+        for line in lines[1:]:
+            parts = line.split()
+            if len(parts) < 5:
+                continue
+            state = parts[1]
+            local, remote = parts[4], parts[5] if len(parts) > 5 else ""
+            process = ""
+            if "users:" in line:
+                process = line.split('"')[1] if line.count('"') >= 2 else ""
+            rows.append((process or "?", local, remote, state))
+        return rows[:200]
+
+    def _netstat_windows(self) -> list[tuple[str, str, str, str]]:
+        try:
+            result = subprocess.run(
+                ["netstat", "-ano"], capture_output=True, text=True, timeout=15,
+            )
+            lines = result.stdout.splitlines() if result.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        rows: list[tuple[str, str, str, str]] = []
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 4 or parts[0] not in ("TCP", "UDP"):
+                continue
+            state = parts[3] if parts[0] == "TCP" else "UDP"
+            rows.append(("pid:" + parts[-1], parts[1], parts[2], state))
+        return rows[:200]
+
+
+@dataclass
+class ProcessEntry:
+    pid: int
+    name: str
+    cmdline: str
+    risk: str
+    note: str
+
+
+class ProcessAuditor:
+    """Heuristic review of running processes: odd launch dirs, script engines, masquerades."""
+
+    SCRIPT_ENGINES = ("powershell", "wscript", "cscript", "mshta", "rundll32", "regsvr32")
+
+    def audit(self) -> list[ProcessEntry]:
+        if os.name == "nt":
+            return self._audit_windows()
+        return self._audit_posix()
+
+    def _classify(self, name: str, cmdline: str, cwd: str = "") -> tuple[str, str]:
+        lowered = cmdline.lower()
+        for engine in self.SCRIPT_ENGINES:
+            if engine in lowered and ("-e " in lowered or "enc " in lowered or "base64" in lowered):
+                return "high", f"Script engine '{engine}' running encoded commands"
+        if cwd.startswith(("/tmp", "/dev/shm", "/var/tmp")) or "\\temp\\" in cwd.lower():
+            return "medium", "Running from a temporary directory"
+        return "low", "Normal"
+
+    def _audit_posix(self) -> list[ProcessEntry]:
+        entries: list[ProcessEntry] = []
+        proc = Path("/proc")
+        if not proc.is_dir():
+            return entries
+        for child in proc.iterdir():
+            if not child.name.isdigit():
+                continue
+            pid = int(child.name)
+            try:
+                name = (child / "comm").read_text(encoding="utf-8", errors="ignore").strip()
+                cmdline = (child / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+                try:
+                    cwd = os.readlink(child / "cwd")
+                except OSError:
+                    cwd = ""
+            except OSError:
+                continue
+            risk, note = self._classify(name, cmdline or name, cwd)
+            if risk != "low":
+                entries.append(ProcessEntry(pid, name, (cmdline or name)[:120], risk, note))
+        return entries
+
+    def _audit_windows(self) -> list[ProcessEntry]:
+        entries: list[ProcessEntry] = []
+        try:
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,Name,CommandLine,ExecutablePath", "/format:csv"],
+                capture_output=True, text=True, timeout=20,
+            )
+            lines = result.stdout.splitlines() if result.returncode == 0 else []
+        except (OSError, subprocess.TimeoutExpired):
+            return entries
+        for line in lines:
+            parts = line.split(",")
+            if len(parts) < 5:
+                continue
+            _, cmdline, exe_path, name, pid = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if not pid.strip().isdigit():
+                continue
+            risk, note = self._classify(name, cmdline or name, exe_path)
+            if risk != "low":
+                entries.append(ProcessEntry(int(pid), name, (cmdline or name)[:120], risk, note))
+        return entries
+
+
+class ScanScheduler:
+    """Runs scans on a simple interval (every N hours) with completion callbacks."""
+
+    def __init__(self) -> None:
+        self.interval_hours = 24.0
+        self.enabled = False
+        self.mode = "quick"
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self.next_run_at: float | None = None
+        self.last_run_at: str | None = None
+
+    def start(self, scan_fn: Callable[[], None]) -> None:
+        self.stop()
+        self._stop.clear()
+        self.enabled = True
+        self.next_run_at = __import__("time").time() + self.interval_hours * 3600
+
+        def loop() -> None:
+            while not self._stop.is_set():
+                import time
+                wait = max(5.0, (self.next_run_at or 0) - time.time())
+                if self._stop.wait(min(wait, 30.0)):
+                    return
+                if self.next_run_at and time.time() >= self.next_run_at:
+                    scan_fn()
+                    self.last_run_at = datetime.now().isoformat(timespec="seconds")
+                    self.next_run_at = time.time() + self.interval_hours * 3600
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self.enabled = False
+        self._stop.set()
+        self._thread = None
+        self.next_run_at = None
+
+    def status(self) -> dict:
+        next_in = None
+        if self.enabled and self.next_run_at:
+            import time
+            next_in = max(0, int(self.next_run_at - time.time()))
+        return {
+            "enabled": self.enabled,
+            "interval_hours": self.interval_hours,
+            "mode": self.mode,
+            "next_in_seconds": next_in,
+            "last_run_at": self.last_run_at,
+        }
+
+
+class ThreatHistory:
+    """Persistent JSON timeline of scans, detections, actions and guard events."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or (Path.home() / ".cobrashield" / "history.json")
+        self._cache: list[dict] | None = None
+        self._cache_mtime: float | None = None
+
+    def _load(self) -> list[dict]:
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if self._cache is not None and mtime == self._cache_mtime:
+            return self._cache
+        events: list[dict] = []
+        if mtime is not None:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                if isinstance(raw, list):
+                    events = raw
+            except (OSError, json.JSONDecodeError):
+                pass
+        self._cache = events
+        self._cache_mtime = mtime
+        return events
+
+    def _save(self, events: list[dict]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(events[-500:], indent=1), encoding="utf-8")
+        self._cache = None
+
+    def record(self, kind: str, title: str, detail: str = "") -> None:
+        events = self._load()
+        events.append({
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "kind": kind,
+            "title": title,
+            "detail": detail,
+        })
+        self._save(events)
+
+    def recent(self, limit: int = 50) -> list[dict]:
+        return list(reversed(self._load()[-limit:]))
+
+
+def load_signature_packs(directory: Path | None = None) -> dict[str, bytes]:
+    """Load extra signatures from ~/.cobrashield/signatures/*.txt (one per line, '#' = comment)."""
+    directory = directory or (Path.home() / ".cobrashield" / "signatures")
+    signatures: dict[str, bytes] = {}
+    if not directory.is_dir():
+        return signatures
+    try:
+        packs = sorted(directory.glob("*.txt"))
+    except OSError:
+        return signatures
+    for pack in packs:
+        try:
+            lines = pack.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        for index, line in enumerate(lines, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            signatures[f"PACK:{pack.stem}#{index}"] = line.encode("utf-8", errors="ignore")
+    return signatures
 
 
 class HoneyfileSentinel:

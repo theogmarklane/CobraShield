@@ -1,17 +1,25 @@
 from pathlib import Path
 import os
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch, MagicMock
 
 from scanner import (
     Allowlist,
+    BrowserExtensionAuditor,
     HoneyfileSentinel,
     MalwareScanner,
+    NetworkAuditor,
+    ProcessAuditor,
     QuarantineManager,
+    ScanScheduler,
+    StartupAuditor,
+    ThreatHistory,
     compute_health_score,
     get_system_scan_roots,
     is_chromebook,
+    load_signature_packs,
 )
 
 
@@ -210,6 +218,97 @@ class ScannerTests(unittest.TestCase):
             scanner = MalwareScanner(allowlist=allowlist, excluded_paths=[])
 
             self.assertEqual(scanner.scan_file(target), [])
+
+    def test_startup_auditor_runs_and_detects_tmp(self) -> None:
+        auditor = StartupAuditor()
+        entries = auditor.audit()  # must not raise on any platform
+        self.assertIsInstance(entries, list)
+
+        risk, note = auditor._risk_of("/tmp/evil.sh --persist")
+        self.assertEqual(risk, "high")
+        risk, note = auditor._risk_of("/usr/bin/dropbox start")
+        self.assertEqual(risk, "low")
+
+    def test_network_auditor_runs_and_flags_ports(self) -> None:
+        auditor = NetworkAuditor()
+        entries = auditor.audit()  # may be empty in containers; just must not raise
+        self.assertIsInstance(entries, list)
+        self.assertEqual(auditor._port_of("1.2.3.4:443"), 443)
+        self.assertIsNone(auditor._port_of("weird"))
+
+    def test_process_auditor_classifies_encoded_scripts(self) -> None:
+        auditor = ProcessAuditor()
+        risk, _ = auditor._classify("powershell", "powershell.exe -enc aGVsbG8=", "C:\\")
+        self.assertEqual(risk, "high")
+        risk, _ = auditor._classify("bash", "bash", "/tmp")
+        self.assertEqual(risk, "medium")
+        risk, _ = auditor._classify("python", "python app.py", "/home/user")
+        self.assertEqual(risk, "low")
+
+    def test_extension_auditor_scores_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "chrome" / "Default" / "Extensions" / "abcdef" / "1.0"
+            profile.mkdir(parents=True)
+            (profile / "manifest.json").write_text(
+                '{"name": "Shady Helper", "permissions": ["<all_urls>", "cookies", "history"]}'
+            )
+            safe = Path(tmp) / "chrome" / "Default" / "Extensions" / "uvwxyz" / "2.0"
+            safe.mkdir(parents=True)
+            (safe / "manifest.json").write_text('{"name": "Reader", "permissions": ["storage"]}')
+
+            auditor = BrowserExtensionAuditor()
+            auditor.CHROME_RELATIVE = {"nt": [], "posix": [("Chrome", Path(tmp) / "chrome")]}
+            findings = {f.name: f.risk for f in auditor.audit()}
+
+            self.assertEqual(findings.get("Shady Helper"), "high")
+            self.assertEqual(findings.get("Reader"), "low")
+
+    def test_threat_history_records_and_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            history = ThreatHistory(Path(tmp) / "history.json")
+            history.record("scan", "Smart scan completed", "100 files")
+            history.record("detection", "EICAR-Test-File", "/tmp/eicar.txt")
+
+            events = history.recent(10)
+            self.assertEqual(len(events), 2)
+            self.assertEqual(events[0]["kind"], "detection")  # newest first
+            self.assertEqual(events[1]["title"], "Smart scan completed")
+
+    def test_signature_packs_merge(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            packs_dir = Path(tmp) / "signatures"
+            packs_dir.mkdir()
+            (packs_dir / "community.txt").write_text("# comment\n\nEVIL-STRING-123\n")
+
+            packs = load_signature_packs(packs_dir)
+            self.assertEqual(len(packs), 1)
+
+            scanner = MalwareScanner(excluded_paths=[])
+            scanner.signatures = {**MalwareScanner.SIGNATURES, **packs}
+            target = Path(tmp) / "infected.bin"
+            target.write_text("payload EVIL-STRING-123 payload")
+
+            detections = scanner.scan_file(target)
+            self.assertEqual(len(detections), 1)
+            self.assertTrue(detections[0].signature_name.startswith("PACK:community"))
+
+    def test_scheduler_fires_scan(self) -> None:
+        import time
+
+        scheduler = ScanScheduler()
+        scheduler.interval_hours = 0.0001  # ~0.36 seconds
+        fired = threading.Event()
+
+        def fake_scan() -> None:
+            fired.set()
+
+        scheduler.start(fake_scan)
+        try:
+            self.assertTrue(fired.wait(timeout=15))
+        finally:
+            scheduler.stop()
+        status = scheduler.status()
+        self.assertFalse(status["enabled"])
 
 
 if __name__ == "__main__":

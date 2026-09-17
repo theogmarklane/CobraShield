@@ -18,6 +18,7 @@
     <button data-page="threats">Threats</button>
     <button data-page="vault">Vault</button>
     <button data-page="guard">Live Guard</button>
+    <button data-page="system">System</button>
   </nav>
   <div class="profile"><span class="avatar" id="avatar">CS</span><span><span id="user-name">CobraShield user</span><small id="device-kind">Personal device</small></span></div>
 </aside>
@@ -121,6 +122,69 @@
       </div>
     </div>
 
+    <!-- SYSTEM -->
+    <div class="page" id="page-system">
+      <div class="section-head"><div><div class="eyebrow">Audits & automation</div><h2>System</h2></div></div>
+
+      <div class="panel">
+        <h3>Scheduled scans</h3>
+        <p class="hint">Set it and forget it — CobraShield re-scans automatically on your chosen interval.</p>
+        <div class="btnrow">
+          <select id="sched-mode"><option value="quick">Smart scan</option><option value="full">Full system scan</option></select>
+          <select id="sched-hours">
+            <option value="6">Every 6 hours</option>
+            <option value="12">Every 12 hours</option>
+            <option value="24" selected>Every 24 hours</option>
+            <option value="72">Every 3 days</option>
+            <option value="168">Weekly</option>
+          </select>
+          <button class="btn primary" id="sched-btn">Enable schedule</button>
+          <span class="mini" id="sched-status">Scheduler is off</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Signature packs</h3>
+        <p class="hint">Drop .txt files (one signature per line) into ~/.cobrashield/signatures/ and load them — community threat feeds, custom IOCs, whatever you've got.</p>
+        <div class="btnrow">
+          <button class="btn" id="packs-btn">Load signature packs</button>
+          <span class="mini" id="packs-status">No packs loaded</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Startup & persistence audit <span class="chip" id="su-count">—</span></h3>
+        <p class="hint">Everything configured to launch at boot/login. Malware hides here to survive reboots.</p>
+        <div class="btnrow" style="margin-bottom:8px"><button class="btn" id="su-btn">Run audit</button></div>
+        <div id="su-empty" class="empty">Run the audit to list autostart entries, cron jobs and (on Windows) Run-keys & Startup folder items.</div>
+        <table id="su-table" hidden><thead><tr><th>Source</th><th>Name</th><th>Launches</th><th>Risk</th><th>Note</th></tr></thead><tbody id="su-body"></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h3>Browser extension audit <span class="chip" id="ex-count">—</span></h3>
+        <p class="hint">Extensions with powerful permissions (cookies + all URLs) are the #1 infostealer vector on Chromebooks and PCs.</p>
+        <div class="btnrow" style="margin-bottom:8px"><button class="btn" id="ex-btn">Run audit</button></div>
+        <div id="ex-empty" class="empty">Run the audit to inventory Chrome, Edge, Brave and Chromium extensions.</div>
+        <table id="ex-table" hidden><thead><tr><th>Browser</th><th>Extension</th><th>ID</th><th>Risk</th><th>Note</th></tr></thead><tbody id="ex-body"></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h3>Network connections <span class="chip" id="net-count">—</span></h3>
+        <p class="hint">Outbound connections and listeners. Unusual destination ports and open listeners get flagged.</p>
+        <div class="btnrow" style="margin-bottom:8px"><button class="btn" id="net-btn">Snapshot connections</button></div>
+        <div id="net-empty" class="empty">Take a snapshot to review active connections.</div>
+        <table id="net-table" hidden><thead><tr><th>Process</th><th>Local</th><th>Remote</th><th>State</th><th>Risk</th></tr></thead><tbody id="net-body"></tbody></table>
+      </div>
+
+      <div class="panel">
+        <h3>Suspicious processes <span class="chip" id="pr-count">—</span></h3>
+        <p class="hint">Heuristic look at running processes: encoded script-engine commands, binaries launched from temp directories.</p>
+        <div class="btnrow" style="margin-bottom:8px"><button class="btn" id="pr-btn">Run audit</button></div>
+        <div id="pr-empty" class="empty">Run the audit to heuristically review running processes.</div>
+        <table id="pr-table" hidden><thead><tr><th>PID</th><th>Name</th><th>Command line</th><th>Risk</th><th>Note</th></tr></thead><tbody id="pr-body"></tbody></table>
+      </div>
+    </div>
+
   </div>
 </section></main>
 <script>
@@ -145,13 +209,32 @@ document.querySelectorAll('.nav button').forEach(button => button.addEventListen
   sidebar.classList.remove('open');
   if (button.dataset.page === 'vault') loadVault();
   if (button.dataset.page === 'threats') loadAllowlist();
+  if (button.dataset.page === 'system') loadScheduler();
 }));
 
 /* ---------------- activity feed ---------------- */
 const activity = [];
+let historyLoaded = false;
 function logActivity(icon, title, copy, tone){
   activity.unshift({icon, title, copy, tone: tone || 'ok', time: new Date()});
   renderActivity();
+}
+const KIND_META = {scan: ['✓', 'ok'], detection: ['!', 'bad'], action: ['↧', 'warn'], guard: ['↗', 'ok']};
+async function loadHistoryFeed(){
+  try {
+    const res = await api('history');
+    const known = new Set(activity.map(a => a.title + '|' + (a.histTime || '')));
+    for (const e of res.events){
+      const key = e.title + '|' + e.time;
+      if (historyLoaded && known.has(key)) continue;
+      if (known.has(key)) continue;
+      const [icon, tone] = KIND_META[e.kind] || ['◌', 'ok'];
+      activity.push({icon, title: e.title, copy: e.detail, tone, time: new Date(e.time), histTime: e.time});
+    }
+    historyLoaded = true;
+    activity.sort((a, b) => b.time - a.time);
+    renderActivity();
+  } catch(e){}
 }
 function renderActivity(){
   const list = $('#activity-list');
@@ -354,6 +437,77 @@ async function pollGuard(){
   } catch(e){}
 }
 
+/* ---------------- system page ---------------- */
+function riskBadge(r){
+  return `<span class="sev ${r === 'high' ? 'high' : r === 'medium' ? 'medium' : 'low'}">${esc(r.toUpperCase())}</span>`;
+}
+function fillAudit(prefix, res, cols, emptyText){
+  const entries = res.entries || [];
+  $(prefix + '-count').textContent = entries.length;
+  const empty = $(prefix + '-empty'), table = $(prefix + '-table'), body = $(prefix + '-body');
+  if (!entries.length){ empty.hidden = false; empty.textContent = emptyText; table.hidden = true; return; }
+  empty.hidden = true; table.hidden = false;
+  body.innerHTML = entries.map(e => '<tr>' + cols.map(c => {
+    if (c === 'risk') return '<td>' + riskBadge(e.risk) + '</td>';
+    return '<td>' + esc(String(e[c] ?? '')) + '</td>';
+  }).join('') + '</tr>').join('');
+}
+$('#su-btn').addEventListener('click', async () => {
+  const res = await api('audit/startup', {});
+  fillAudit('#su', res, ['source', 'name', 'location', 'risk', 'note'], 'No autostart entries found.');
+  const risky = (res.entries || []).filter(e => e.risk !== 'low').length;
+  logActivity(risky ? '!' : '✓', 'Startup audit completed', res.entries.length + ' entries, ' + risky + ' flagged.', risky ? 'warn' : 'ok');
+});
+$('#ex-btn').addEventListener('click', async () => {
+  const res = await api('audit/extensions', {});
+  fillAudit('#ex', res, ['browser', 'name', 'extension_id', 'risk', 'note'], 'No browser extensions found.');
+  const risky = (res.entries || []).filter(e => e.risk !== 'low').length;
+  logActivity(risky ? '!' : '✓', 'Extension audit completed', res.entries.length + ' extensions, ' + risky + ' flagged.', risky ? 'warn' : 'ok');
+});
+$('#net-btn').addEventListener('click', async () => {
+  const res = await api('audit/network', {});
+  fillAudit('#net', res, ['process', 'local', 'remote', 'state', 'risk'], 'No active connections found.');
+  logActivity('◌', 'Network snapshot taken', res.entries.length + ' connection(s) reviewed.', 'ok');
+});
+$('#pr-btn').addEventListener('click', async () => {
+  const res = await api('audit/processes', {});
+  fillAudit('#pr', res, ['pid', 'name', 'cmdline', 'risk', 'note'], 'No suspicious processes found.');
+  logActivity(res.entries.length ? '!' : '✓', 'Process audit completed', res.entries.length + ' suspicious process(es).', res.entries.length ? 'warn' : 'ok');
+});
+
+/* ---------------- scheduler ---------------- */
+let schedEnabled = false;
+function renderScheduler(s){
+  schedEnabled = !!s.enabled;
+  $('#sched-btn').textContent = schedEnabled ? 'Disable schedule' : 'Enable schedule';
+  if (schedEnabled){
+    const mins = s.next_in_seconds === null ? '?' : Math.round(s.next_in_seconds / 60);
+    $('#sched-status').textContent = 'Active — next ' + s.mode + ' scan in ~' + mins + ' min';
+  } else {
+    $('#sched-status').textContent = 'Scheduler is off';
+  }
+}
+async function loadScheduler(){
+  try { renderScheduler(await api('scheduler/status')); } catch(e){}
+}
+$('#sched-btn').addEventListener('click', async () => {
+  const res = await api('scheduler/set', {
+    enabled: !schedEnabled,
+    interval_hours: parseFloat($('#sched-hours').value),
+    mode: $('#sched-mode').value,
+  });
+  renderScheduler(res);
+  logActivity(res.enabled ? '↗' : '◌', res.enabled ? 'Scheduled scans enabled' : 'Scheduled scans disabled',
+    res.enabled ? 'Every ' + res.interval_hours + 'h (' + res.mode + ')' : '', 'ok');
+});
+
+/* ---------------- signature packs ---------------- */
+$('#packs-btn').addEventListener('click', async () => {
+  const res = await api('signatures/load', {});
+  $('#packs-status').textContent = res.loaded ? res.loaded + ' signature(s) from: ' + res.names.join(', ') : 'No packs found in ~/.cobrashield/signatures/';
+  logActivity(res.loaded ? '✓' : '◌', 'Signature packs loaded', res.loaded + ' signature(s)' + (res.names.length ? ' from ' + res.names.join(', ') : ''), res.loaded ? 'ok' : 'ok');
+});
+
 /* ---------------- report ---------------- */
 $('#report-btn').addEventListener('click', async () => {
   const res = await api('report/export', {});
@@ -382,6 +536,7 @@ async function refresh(){
     $('#avatar').textContent = initials; $('#avatar2').textContent = initials;
     renderDetections(s.detections_list || []);
     loadAllowlist();
+    loadHistoryFeed();
     $('#status-title').textContent = 'You are protected';
     $('#status-copy').textContent = 'Run a smart scan to check your device.';
   });

@@ -13,16 +13,23 @@ import webbrowser
 
 from scanner import (
     Allowlist,
+    BrowserExtensionAuditor,
     Detection,
     HoneyfileSentinel,
     MalwareScanner,
+    NetworkAuditor,
+    ProcessAuditor,
     QuarantineManager,
+    ScanScheduler,
     ScanSummary,
+    StartupAuditor,
+    ThreatHistory,
     compute_health_score,
     export_html_report,
     get_quick_scan_roots,
     get_system_scan_roots,
     is_chromebook,
+    load_signature_packs,
 )
 
 APP_HTML_PATH = Path(__file__).resolve().parent / "ui" / "app.html"
@@ -41,6 +48,12 @@ class CobraShieldService:
         self.scanner = MalwareScanner(allowlist=self.allowlist)
         self.quarantine = QuarantineManager()
         self.sentinel = HoneyfileSentinel()
+        self.history = ThreatHistory()
+        self.scheduler = ScanScheduler()
+        self.startup_auditor = StartupAuditor()
+        self.extension_auditor = BrowserExtensionAuditor()
+        self.network_auditor = NetworkAuditor()
+        self.process_auditor = ProcessAuditor()
         self.lock = threading.Lock()
 
         self.last_summary = ScanSummary()
@@ -48,6 +61,7 @@ class CobraShieldService:
         self.last_scan_at: str | None = None
         self.detections: list[Detection] = []
         self.auto_action = "report"
+        self.packs_loaded: list[str] = []
 
         self.scan_running = False
         self.scan_progress: dict = {"current": 0, "total": 0, "label": ""}
@@ -57,6 +71,9 @@ class CobraShieldService:
         self.guard_stop = threading.Event()
         self.guard_thread: threading.Thread | None = None
         self.guard_events: list[dict] = []
+
+        if self.scheduler.enabled:
+            self.scheduler.start(lambda: self.start_scan(self.scheduler.mode, self.auto_action))
 
     # ---------- helpers ----------
 
@@ -111,6 +128,8 @@ class CobraShieldService:
             "guard_running": self.guard_running(),
             "last_scan": self.last_scan_at,
             "detections_list": [self._detection_payload(d) for d in self.detections],
+            "scheduler": self.scheduler.status(),
+            "packs_loaded": self.packs_loaded,
         }
 
     # ---------- scanning ----------
@@ -151,6 +170,19 @@ class CobraShieldService:
                 self.detections = combined.detections
                 self.last_roots = roots
                 self.last_scan_at = datetime.now().isoformat(timespec="seconds")
+            self.history.record(
+                "scan",
+                f"{self.scan_mode.title()} scan completed",
+                f"{combined.scanned_files:,} files, {len(combined.detections)} detections, "
+                f"{len(combined.inaccessible_paths)} blocked paths"
+                + (f", {len(self.scan_actions)} auto-actions" if self.scan_actions else ""),
+            )
+            for detection in combined.detections:
+                self.history.record(
+                    "detection",
+                    f"{detection.signature_name}",
+                    str(detection.file_path),
+                )
         finally:
             self.scan_progress["label"] = "Scan complete"
             self.scan_running = False
@@ -180,6 +212,7 @@ class CobraShieldService:
             except OSError as err:
                 raise ApiError(str(err))
             self.detections.pop(index)
+            self.history.record("action", "Threat quarantined", record.original_path)
             return {"ok": True, "path": record.original_path}
         if action == "delete":
             try:
@@ -187,10 +220,12 @@ class CobraShieldService:
             except OSError as err:
                 raise ApiError(str(err))
             self.detections.pop(index)
+            self.history.record("action", "Threat deleted", str(detection.file_path))
             return {"ok": True, "path": str(detection.file_path)}
         if action == "safe":
             self.allowlist.add(path=detection.file_path, digest=detection.file_hash)
             self.detections.pop(index)
+            self.history.record("action", "Marked safe (allowlisted)", str(detection.file_path))
             return {"ok": True, "path": str(detection.file_path)}
         if action == "dismiss":
             self.detections.pop(index)
@@ -295,10 +330,63 @@ class CobraShieldService:
         REPORT_DIR.mkdir(parents=True, exist_ok=True)
         target = REPORT_DIR / f"cobrashield-report-{datetime.now():%Y%m%d-%H%M%S}.html"
         export_html_report(self.last_summary, self.last_roots, target, quarantined=self.quarantine.count())
+        self.history.record("action", "Report exported", str(target))
         return {"ok": True, "path": str(target)}
+
+    # ---------- audits ----------
+
+    def audit_startup(self) -> dict:
+        entries = self.startup_auditor.audit()
+        return {"entries": [e.__dict__ for e in entries]}
+
+    def audit_extensions(self) -> dict:
+        entries = self.extension_auditor.audit()
+        return {"entries": [e.__dict__ for e in entries]}
+
+    def audit_network(self) -> dict:
+        entries = self.network_auditor.audit()
+        return {"entries": [e.__dict__ for e in entries]}
+
+    def audit_processes(self) -> dict:
+        entries = self.process_auditor.audit()
+        return {"entries": [e.__dict__ for e in entries]}
+
+    # ---------- scheduler ----------
+
+    def scheduler_set(self, enabled: bool, interval_hours: float, mode: str) -> dict:
+        self.scheduler.interval_hours = max(0.05, min(interval_hours, 168.0))
+        self.scheduler.mode = mode if mode in ("quick", "full") else "quick"
+        if enabled:
+            self.scheduler.start(lambda: self.start_scan(self.scheduler.mode, self.auto_action))
+            self.history.record("action", f"Scheduled scans enabled (every {self.scheduler.interval_hours}h)", "")
+        else:
+            self.scheduler.stop()
+            self.history.record("action", "Scheduled scans disabled", "")
+        return self.scheduler.status()
+
+    # ---------- history ----------
+
+    def history_recent(self) -> dict:
+        return {"events": self.history.recent(50)}
+
+    # ---------- signature packs ----------
+
+    def signatures_load(self) -> dict:
+        packs = load_signature_packs()
+        if not packs:
+            self.packs_loaded = []
+            return {"loaded": 0, "names": []}
+        merged = dict(MalwareScanner.SIGNATURES)
+        merged.update(packs)
+        self.scanner.signatures = merged
+        names = sorted({name.split("#")[0].replace("PACK:", "") for name in packs})
+        self.packs_loaded = names
+        self.history.record("action", f"Loaded {len(packs)} signature(s) from packs", ", ".join(names))
+        return {"loaded": len(packs), "names": names}
 
     def shutdown(self) -> None:
         self.guard_stop.set()
+        self.scheduler.stop()
 
 
 class ApiHandler(BaseHTTPRequestHandler):
@@ -354,6 +442,12 @@ class ApiHandler(BaseHTTPRequestHandler):
         if self.path == "/api/guard/events":
             self._send_json(self.service.guard_events_since())
             return
+        if self.path == "/api/history":
+            self._send_json(self.service.history_recent())
+            return
+        if self.path == "/api/scheduler/status":
+            self._send_json(self.service.scheduler.status())
+            return
         self._send_json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
@@ -384,6 +478,28 @@ class ApiHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/report/export":
                 self._send_json(self.service.report_export())
+                return
+            if self.path == "/api/scheduler/set":
+                self._send_json(self.service.scheduler_set(
+                    bool(body.get("enabled")),
+                    float(body.get("interval_hours", 24)),
+                    body.get("mode", "quick"),
+                ))
+                return
+            if self.path == "/api/signatures/load":
+                self._send_json(self.service.signatures_load())
+                return
+            if self.path == "/api/audit/startup":
+                self._send_json(self.service.audit_startup())
+                return
+            if self.path == "/api/audit/extensions":
+                self._send_json(self.service.audit_extensions())
+                return
+            if self.path == "/api/audit/network":
+                self._send_json(self.service.audit_network())
+                return
+            if self.path == "/api/audit/processes":
+                self._send_json(self.service.audit_processes())
                 return
             self._send_json({"error": "not found"}, 404)
         except ApiError as err:
