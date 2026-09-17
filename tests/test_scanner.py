@@ -1,9 +1,17 @@
 from pathlib import Path
+import os
 import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-from scanner import MalwareScanner, get_system_scan_roots, is_chromebook
+from scanner import (
+    HoneyfileSentinel,
+    MalwareScanner,
+    QuarantineManager,
+    compute_health_score,
+    get_system_scan_roots,
+    is_chromebook,
+)
 
 
 class ScannerTests(unittest.TestCase):
@@ -66,6 +74,94 @@ class ScannerTests(unittest.TestCase):
         self.assertTrue(MalwareScanner._is_virtual_dir(Path("/sys/kernel")))
         self.assertTrue(MalwareScanner._is_virtual_dir(Path("/dev/pts")))
         self.assertFalse(MalwareScanner._is_virtual_dir(Path("/home/user/doc.txt")))
+
+    def test_detects_double_extension_masquerade(self) -> None:
+        scanner = MalwareScanner(signatures={"x": b"zzz-not-present"})
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_doc = Path(tmp) / "invoice.pdf.exe"
+            fake_doc.write_bytes(b"tiny")
+
+            detections = scanner.scan_file(fake_doc)
+
+            self.assertTrue(any(d.detection_type == "heuristic" for d in detections))
+            self.assertTrue(any(d.signature_name == "HEUR:DoubleExtension" for d in detections))
+
+    def test_detects_high_entropy_payload(self) -> None:
+        scanner = MalwareScanner(signatures={"x": b"zzz-not-present"})
+        with tempfile.TemporaryDirectory() as tmp:
+            blob = Path(tmp) / "payload.bin"
+            blob.write_bytes(os.urandom(32 * 1024))
+
+            detections = scanner.scan_file(blob)
+
+            self.assertTrue(any(d.signature_name == "HEUR:HighEntropy" for d in detections))
+
+    def test_heuristics_can_be_disabled(self) -> None:
+        scanner = MalwareScanner(signatures={"x": b"zzz-not-present"}, enable_heuristics=False)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_doc = Path(tmp) / "invoice.pdf.exe"
+            fake_doc.write_bytes(b"tiny")
+
+            self.assertEqual(scanner.scan_file(fake_doc), [])
+
+    def test_quarantine_restore_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = QuarantineManager(Path(tmp) / "vault")
+            target = Path(tmp) / "eicar.txt"
+            target.write_text(
+                "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            )
+            scanner = MalwareScanner()
+
+            detection = scanner.scan_file(target)[0]
+            record = manager.quarantine(detection)
+            self.assertFalse(target.exists())
+            self.assertEqual(manager.count(), 1)
+
+            restored = manager.restore(record.record_id)
+            self.assertTrue(restored.exists())
+            self.assertEqual(manager.count(), 0)
+
+            detection = scanner.scan_file(target)[0]
+            record = manager.quarantine(detection)
+            manager.delete(record.record_id)
+            self.assertEqual(manager.count(), 0)
+            self.assertFalse((Path(tmp) / "vault" / f"{record.record_id}.qs").exists())
+
+    def test_honeyfile_tripwire_alerts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sentinel = HoneyfileSentinel(Path(tmp) / "state.json")
+            watch_dir = Path(tmp) / "watched"
+            watch_dir.mkdir()
+
+            planted = sentinel.plant([watch_dir])
+            self.assertTrue(planted)
+            self.assertEqual(sentinel.check(), [])
+
+            planted[0].write_text("ransom note", encoding="utf-8")
+            alerts = sentinel.check()
+            self.assertEqual(alerts[0][1], "modified")
+
+            for leftover in planted[1:]:
+                leftover.unlink()
+            statuses = {status for _, status in sentinel.check()}
+            self.assertIn("deleted", statuses)
+
+    def test_health_score_drops_with_detections(self) -> None:
+        scanner = MalwareScanner()
+        with tempfile.TemporaryDirectory() as tmp:
+            clean = scanner.scan_paths([Path(tmp)])
+            score, status = compute_health_score(clean)
+            self.assertEqual((score, status), (100, "SECURE"))
+
+            bad = Path(tmp) / "eicar.txt"
+            bad.write_text(
+                "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+            )
+            dirty = scanner.scan_paths([Path(tmp)])
+            score, status = compute_health_score(dirty)
+            self.assertLess(score, 100)
+            self.assertNotEqual(status, "SECURE")
 
 
 if __name__ == "__main__":
